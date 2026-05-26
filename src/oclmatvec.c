@@ -40,21 +40,24 @@ void FreeEverything(void); // for proper finalization
 
 //======================================================================================================================
 
-void MatVec (doublecomplex * restrict argvec,    // the argument vector
-             doublecomplex * restrict resultvec, // the result vector
-             double *inprod,         // the resulting inner product
-             const bool her,         // whether Hermitian transpose of the matrix is used
-             TIME_TYPE *timing,      // this variable is incremented by total time
-             TIME_TYPE *comm_timing) // this variable is incremented by communication time
+static void MatVecCore (doublecomplex * restrict argvec,    // the argument vector
+                        doublecomplex * restrict resultvec, // the result vector
+                        double *inprod,         // the resulting inner product
+                        const bool her,         // whether Hermitian transpose of the matrix is used
+                        TIME_TYPE *timing,      // this variable is incremented by total time
+                        TIME_TYPE *comm_timing, // this variable is incremented by communication time
+                        const bool raw)         // skip preconditioning and identity term
 /* This function implements matrix-vector product. If we want to calculate the inner product as well, we pass 'inprod'
  * as a non-NULL pointer. if 'inprod' is NULL, we don't calculate it. 'argvec' always remains unchanged afterwards,
  * however it is not strictly const - some manipulations may occur during the execution. comm_timing can be NULL, then
- * it is ignored.
+ * it is ignored. In raw mode it computes only the convolution D.x, which is used by Shifted_CG.
  */
 {
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
+	const cl_kernel arith1_kernel = raw ? clarith1_raw : clarith1;
+	const cl_kernel arith5_kernel = raw ? clarith5_raw : clarith5;
 
 	/* A = I + S.D.S
 	 * S = sqrt(C)
@@ -120,7 +123,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	// setting (buf)Xmatrix with zeros (on device)
 	CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufXmatrix));
 	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&xmsize,NULL,0,NULL,NULL));
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith1,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,arith1_kernel,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
 	// FFT X
 	fftX(FFT_FORWARD); // fftX (buf)Xmatrix
 
@@ -167,7 +170,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 
 	// FFT-X back the result
 	fftX(FFT_BACKWARD); // fftX (buf)Xmatrix
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith5,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,arith5_kernel,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
 	if (ipr) {
 		/* calculating inner product in OpenCL is more complicated than usually. The norm for each element is calculated
 		 * inside GPU, but the sum is taken by CPU afterwards. Hence, additional large buffers are required.
@@ -205,4 +208,28 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 #endif
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;
+}
+
+//======================================================================================================================
+
+void MatVecRaw (doublecomplex * restrict argvec,    // the argument vector
+                doublecomplex * restrict resultvec, // the result vector
+                double *inprod,         // the resulting inner product
+                const bool her,         // whether Hermitian transpose of the matrix is used
+                TIME_TYPE *timing,      // this variable is incremented by total time
+                TIME_TYPE *comm_timing) // this variable is incremented by communication time
+{
+	MatVecCore(argvec,resultvec,inprod,her,timing,comm_timing,true);
+}
+
+//======================================================================================================================
+
+void MatVec (doublecomplex * restrict argvec,    // the argument vector
+             doublecomplex * restrict resultvec, // the result vector
+             double *inprod,         // the resulting inner product
+             const bool her,         // whether Hermitian transpose of the matrix is used
+             TIME_TYPE *timing,      // this variable is incremented by total time
+             TIME_TYPE *comm_timing) // this variable is incremented by communication time
+{
+	MatVecCore(argvec,resultvec,inprod,her,timing,comm_timing,false);
 }

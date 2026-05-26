@@ -101,6 +101,20 @@ __kernel void arith1(__global const uchar *material,__global const ushort *posit
 }
 
 //======================================================================================================================
+
+__kernel void arith1_raw(__global const ushort *position,__global const double2 *argvec,__global double2 *Xmatrix,
+	const in_sizet local_Nsmall,const in_sizet smallY,const in_sizet gridX)
+{
+	const size_t id=get_global_id(0);
+	const size_t j=3*id;
+	size_t index;
+	int xcomp;
+
+	index = ((position[j+2]*smallY+position[j+1])*gridX+position[j]);
+	for (xcomp=0;xcomp<3;xcomp++) Xmatrix[index+xcomp*local_Nsmall]=argvec[j+xcomp];
+}
+
+//======================================================================================================================
 // Arith2 kernel
 
 __kernel void arith2(__global const double2 *Xmatrix,__global double2 *slices,const in_sizet gridZ,
@@ -397,6 +411,20 @@ __kernel void arith5(__global const uchar *material,__global const ushort *posit
 		cMult2(&cc_sqrt[mat*3+xcomp],&Xmatrix[index+xcomp*local_Nsmall],&temp);
 		resultvec[j+xcomp]=argvec[j+xcomp]+temp;
 	}
+}
+
+//======================================================================================================================
+
+__kernel void arith5_raw(__global const ushort *position,__global const double2 *Xmatrix,
+	const in_sizet local_Nsmall,const in_sizet smallY,const in_sizet gridX,__global double2 *resultvec)
+{
+	const size_t id = get_global_id(0);
+	const size_t j=3*id;
+	size_t index;
+	int xcomp;
+
+	index = ((position[j+2]*smallY+position[j+1])*gridX+position[j]);
+	for (xcomp=0;xcomp<3;xcomp++) resultvec[j+xcomp]=Xmatrix[index+xcomp*local_Nsmall];
 }
 
 //======================================================================================================================

@@ -145,8 +145,8 @@ the compilation may fail or produce wrong results. If you still want to try, ena
 #define MIN_TERM_WIDTH 20 // ADDA never takes value less than that from environmental variables
 
 // formats for outputs of float values
-#define EFORM "%.10E"             // fixed width
-#define GFORM "%.10g"             // variable width (showing significant digits)
+#define EFORM "%.16E"             // fixed width
+#define GFORM "%.16g"             // variable width (showing significant digits)
 #define GFORMDEF "%g"             // default output for non-precise values
 #define GFORM_FULL "%.16g"        // full precision (for some debugging applications)
 #define GFORM_DEBUG "%.2g"        // for debug and error output

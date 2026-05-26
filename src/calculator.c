@@ -615,7 +615,7 @@ static void InitCC(const enum incpol which)
 	/* this is done here, since InitCC can be run between different runs of the iterative solver; write is blocking to
 	 * ensure completion before function end
 	 */
-	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc_sqrt,CL_TRUE,0,sizeof(cc_sqrt),cc_sqrt,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc_sqrt,CL_TRUE,0,(size_t)Nmat * sizeof(*cc_sqrt),cc_sqrt,0,NULL,NULL));
 #endif
 }
 

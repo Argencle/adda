@@ -38,8 +38,8 @@
  */
 cl_context context;
 cl_command_queue command_queue;
-cl_kernel clarith1,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clzero,clinprod,clnConj,cltransposeof,
-	cltransposeob,cltransposeofR;
+cl_kernel clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,clzero,clinprod,
+	clnConj,cltransposeof,cltransposeob,cltransposeofR;
 cl_mem bufXmatrix,bufmaterial,bufposition,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 
@@ -440,6 +440,8 @@ void oclinit(void)
 	CL_CH_ERR(err);
 	clarith1=clCreateKernel(program,"arith1",&err);
 	CL_CH_ERR(err);
+	clarith1_raw=clCreateKernel(program,"arith1_raw",&err);
+	CL_CH_ERR(err);
 	clarith2=clCreateKernel(program,"arith2",&err);
 	CL_CH_ERR(err);
 	clarith3=clCreateKernel(program,"arith3",&err);
@@ -447,6 +449,8 @@ void oclinit(void)
 	clarith4=clCreateKernel(program,"arith4",&err);
 	CL_CH_ERR(err);
 	clarith5=clCreateKernel(program,"arith5",&err);
+	CL_CH_ERR(err);
+	clarith5_raw=clCreateKernel(program,"arith5_raw",&err);
 	CL_CH_ERR(err);
 	clnConj=clCreateKernel(program,"nConj",&err);
 	CL_CH_ERR(err);
@@ -534,10 +538,12 @@ void oclunload(void)
 	CL_CH_ERR(clReleaseProgram(program));
 	CL_CH_ERR(clReleaseKernel(clzero));
 	CL_CH_ERR(clReleaseKernel(clarith1));
+	CL_CH_ERR(clReleaseKernel(clarith1_raw));
 	CL_CH_ERR(clReleaseKernel(clarith2));
 	CL_CH_ERR(clReleaseKernel(clarith3));
 	CL_CH_ERR(clReleaseKernel(clarith4));
 	CL_CH_ERR(clReleaseKernel(clarith5));
+	CL_CH_ERR(clReleaseKernel(clarith5_raw));
 	CL_CH_ERR(clReleaseKernel(clnConj));
 	CL_CH_ERR(clReleaseKernel(clinprod));
 	CL_CH_ERR(clReleaseKernel(cltransposeof));
