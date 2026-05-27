@@ -268,6 +268,11 @@ enum iter { // iterative methods
 	 */
 };
 
+enum matvec_mode { // matrix-vector product mode
+	MV_STANDARD,   // raw interaction operator: D.x
+	MV_SYMMETRIZED // symmetrized system operator: x + S.D.S.x
+};
+
 enum Eftype { // type of E field calculation
 	CE_NORMAL, // normal
 	CE_PARPER  // use symmetry to calculate both incident polarizations from one calculation of internal fields

@@ -143,10 +143,8 @@ static const struct iter_params_struct params[]={
 // EXTERNAL FUNCTIONS
 
 // matvec.c
-void MatVec(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,TIME_TYPE *timing,
-	TIME_TYPE *comm_timing);
-void MatVecRaw(doublecomplex * restrict in, doublecomplex * restrict out, double *inprod, const bool her,
-	TIME_TYPE *timing, TIME_TYPE *comm_timing);
+void MatVec(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,enum matvec_mode mode,
+	TIME_TYPE *timing,TIME_TYPE *comm_timing);
 
 #ifdef OCL_BLAS
 // Test clBLAS version (specific numbers is because we never considered earlier versions)
@@ -206,7 +204,7 @@ static void Check_clBLAS_Err(const clblasStatus err,ERR_LOC_DECL)
 //======================================================================================================================
 
 static void MatVec_wrapper(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,
-	TIME_TYPE *timing,TIME_TYPE *comm_timing)
+	enum matvec_mode mode,TIME_TYPE *timing,TIME_TYPE *comm_timing)
 /* function wrapper for MatVec to be called within the iterative solver if the solver is able to use clBLAS, i.e.
  * the host and GPU memory does not have to be synchronized. Currently it is only used in the BiCG solver.
  */
@@ -214,7 +212,7 @@ static void MatVec_wrapper(doublecomplex * restrict in,doublecomplex * restrict 
 #ifdef OCL_BLAS
 	bufupload=false;
 #endif
-	MatVec(in,out,inprod,her,timing,comm_timing);
+	MatVec(in,out,inprod,her,mode,timing,comm_timing);
 #ifdef OCL_BLAS
 	bufupload=true;
 #endif
@@ -412,7 +410,7 @@ static double ResidualNorm2(doublecomplex * restrict x,doublecomplex * restrict 
 	double res;
 
 	TIME_TYPE mc_time=0;
-	MatVec(x,buffer,NULL,false,mvp_timing,&mc_time);
+	MatVec(x,buffer,NULL,false,MV_SYMMETRIZED,mvp_timing,&mc_time);
 	(*mvp_comm_timing) += mc_time;
 	(*comm_timing) += mc_time;
 	nMult_mat(r,Einc,cc_sqrt);
@@ -501,7 +499,7 @@ ITER_FUNC(BCGS2)
 				rho0=rho1;
 				// u_j+1 = A.u_j
 				if (niter==1 && j==0 && matvec_ready) {} // do nothing; u[1]<=>Avecbuffer already contains matvec result
-				else MatVec(u[j],u[j+1],NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				else MatVec(u[j],u[j+1],NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				sigma=nDotProd(u[j+1],pvec,&Timing_OneIterComm); // sigma = u_j+1.r~0
 				// test for zero sigma (1/alpha)
 				dtmp=cabs(sigma)/cabs(rho1); // assume that rho1 is not exactly zero
@@ -513,7 +511,7 @@ ITER_FUNC(BCGS2)
 				// r_i = r_i - alpha*u_i+1
 				temp1=-alpha;
 				for (i=0;i<=j;i++) nIncrem01_cmplx(r[i],u[i+1],temp1,NULL,NULL);
-				MatVec(r[j],r[j+1],NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(r[j],r[j+1],NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			}
 			// --- The convex polynomial part ---
 			// Z = R'R
@@ -671,7 +669,7 @@ ITER_FUNC(BiCG_CS)
 			}
 			// q_k=Avecbuffer=A.p_k
 			if (niter==1 && matvec_ready) {} // do nothing, Avecbuffer is ready to use
-			else MatVec_wrapper(pvec,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec_wrapper(pvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// mu_k=p_k.q_k; check for mu_k!=0
 #ifdef OCL_BLAS
 			CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufmu,0,bufpvec,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,NULL,
@@ -781,7 +779,7 @@ ITER_FUNC(BiCGStab)
 			}
 			// calculate v_k=A.p_k
 			if (niter==1 && matvec_ready) nCopy(v,Avecbuffer);
-			else MatVec(pvec,v,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(pvec,v,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// alpha_k=ro_new/(v_k.r~)
 			temp1=nDotProd(v,rtilda,&Timing_OneIterComm);
 			dtmp=cabs(temp1)/cabs(ro_new); // assume that ro_new is not exactly zero
@@ -799,7 +797,7 @@ ITER_FUNC(BiCGStab)
 			}
 			else {
 				// t=Avecbuffer=A.s
-				MatVec(s,Avecbuffer,&denumOmega,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(s,Avecbuffer,&denumOmega,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				// omega_k=s.t/|t|^2
 				omega=nDotProd(s,Avecbuffer,&Timing_OneIterComm)/denumOmega;
 				// x_k=x_k-1+alpha_k*p_k+omega_k*s
@@ -837,10 +835,10 @@ ITER_FUNC(CGNR)
 		case PHASE_ITER:
 			// p_1=Ah.r_0 and ro_new=ro_0=|Ah.r_0|^2
 			// since first product is with Ah , matvec_ready can't be employed
-			if (niter==1) MatVec(rvec,pvec,&ro_new,true,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			if (niter==1) MatVec(rvec,pvec,&ro_new,true,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			else {
 				// Avecbuffer=AH.r_k-1, ro_new=ro_k-1=|AH.r_k-1|^2
-				MatVec(rvec,Avecbuffer,&ro_new,true,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(rvec,Avecbuffer,&ro_new,true,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				// beta_k-1=ro_k-1/ro_k-2
 				beta=ro_new/ro_old;
 				// p_k=beta_k-1*p_k-1+AH.r_k-1
@@ -848,7 +846,7 @@ ITER_FUNC(CGNR)
 			}
 			// alpha_k=ro_k-1/|A.p_k|^2
 			// Avecbuffer=A.p_k
-			MatVec(pvec,Avecbuffer,&denumeratorAlpha,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			MatVec(pvec,Avecbuffer,&denumeratorAlpha,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			alpha=ro_new/denumeratorAlpha;
 			// x_k=x_k-1+alpha_k*p_k
 			nIncrem01(xvec,pvec,alpha,NULL,NULL);
@@ -919,7 +917,7 @@ ITER_FUNC(CSYM)
 			/* Avecbuffer = A.q_k. Since q_1 is r_0(*), mat-vec product for niter==1 is equivalent to Ah.r_0 (as in
 			 * CGNR). Thus, matvec_ready can't be employed.
 			 */
-			MatVec(q_new,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			MatVec(q_new,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// alpha_k = q_k(T).A.q_k
 			alpha=nDotProd_conj(q_new,Avecbuffer,&Timing_OneIterComm);
 			// eta_k = c_k-2*c_k-1*beta_k + s_k-1(*)*alpha_k
@@ -1065,7 +1063,7 @@ ITER_FUNC(QMR_CS)
 				temp1=1/beta;
 				nMultSelf_cmplx(Avecbuffer,temp1);
 			}
-			else MatVec(v,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(v,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			alpha=nDotProd_conj(v,Avecbuffer,&Timing_OneIterComm);
 			// v~_k+1=-beta_k*v_k-1-alpha_k*v_k+A.v_k
 			temp2=-alpha;
@@ -1204,7 +1202,7 @@ ITER_FUNC(QMR_CS_2)
 			if (niter==1 && matvec_ready) { // uses that p_1=v_1=r_0/ro_1
 				nMultSelf(Avecbuffer,1/ro_old);
 			}
-			else MatVec(pvec,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(pvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// eps_k = p_k(*).(A.p_k); beta_k = eps_k/delta_k
 			eps=nDotProd_conj(pvec,Avecbuffer,&Timing_OneIterComm);
 			beta=eps/delta;
@@ -1291,7 +1289,7 @@ ITER_FUNC(Shifted_CG)
 	case PHASE_ITER:
 		// Lanczos Process
 		// A.v
-		MatVecRaw(vcur,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+		MatVec(vcur,Avecbuffer,NULL,false,MV_STANDARD,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 		// alfa1
 		alfa1=nDotProd_conj(vcur, Avecbuffer, &Timing_OneIterComm);
 		// vtmp=-alfa1*vcur+A.vcur
@@ -1530,7 +1528,7 @@ static void InitFieldfromE(void)
 	for (i=0;i<Nmat;i++) for (j=0;j<3;j++) mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]);
 	nMultSelf_mat(xvec,mult);
 	// calculate A.x_0, r_0=b-A.x_0, and |r_0|^2
-	MatVec(xvec,Avecbuffer,NULL,false,&Timing_MVP,&Timing_MVPComm);
+	MatVec(xvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_MVP,&Timing_MVPComm);
 	nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 }
 
@@ -1549,7 +1547,7 @@ static const char *CalcInitField(double zero_resid,const enum incpol which)
 			 * cases. Moreover, this option will probably be changed afterwards.
 			 */
 			// calculate A.(x_0=b), r_0=b-A.(x_0=b) and |r_0|^2
-			MatVec(pvec,Avecbuffer,NULL,false,&Timing_MVP,&Timing_MVPComm);
+			MatVec(pvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_MVP,&Timing_MVPComm);
 			nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 			// check which x_0 is better
 			if (zero_resid<inprodR) { // use x_0=0
@@ -1571,7 +1569,7 @@ static const char *CalcInitField(double zero_resid,const enum incpol which)
 		case IF_INC:
 			nCopy(xvec,pvec); // x_0=b, i.e. E_exc=E_inc
 			// calculate A.(x_0=b), r_0=b-A.(x_0=b) and |r_0|^2
-			MatVec(xvec,Avecbuffer,NULL,false,&Timing_MVP,&Timing_MVPComm);
+			MatVec(xvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_MVP,&Timing_MVPComm);
 			nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 			return "x_0 = E_inc";
 		case IF_WKB:

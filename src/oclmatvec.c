@@ -40,29 +40,36 @@ void FreeEverything(void); // for proper finalization
 
 //======================================================================================================================
 
-static void MatVecCore (doublecomplex * restrict argvec,    // the argument vector
-                        doublecomplex * restrict resultvec, // the result vector
-                        double *inprod,         // the resulting inner product
-                        const bool her,         // whether Hermitian transpose of the matrix is used
-                        TIME_TYPE *timing,      // this variable is incremented by total time
-                        TIME_TYPE *comm_timing, // this variable is incremented by communication time
-                        const bool raw)         // skip preconditioning and identity term
+void MatVec (doublecomplex * restrict argvec,    // the argument vector
+             doublecomplex * restrict resultvec, // the result vector
+             double *inprod,         // the resulting inner product
+             const bool her,         // whether Hermitian transpose of the matrix is used
+             const enum matvec_mode mode,
+             TIME_TYPE *timing,      // this variable is incremented by total time
+             TIME_TYPE *comm_timing) // this variable is incremented by communication time
 /* This function implements matrix-vector product. If we want to calculate the inner product as well, we pass 'inprod'
  * as a non-NULL pointer. if 'inprod' is NULL, we don't calculate it. 'argvec' always remains unchanged afterwards,
  * however it is not strictly const - some manipulations may occur during the execution. comm_timing can be NULL, then
- * it is ignored. In raw mode it computes only the convolution D.x, which is used by Shifted_CG.
+ * it is ignored. In MV_STANDARD mode it computes only the convolution D.x, which is used by Shifted_CG.
  */
 {
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
-	const cl_kernel arith1_kernel = raw ? clarith1_raw : clarith1;
-	const cl_kernel arith5_kernel = raw ? clarith5_raw : clarith5;
+	const cl_kernel arith1_kernel = (mode==MV_STANDARD) ? clarith1_raw : clarith1;
+	const cl_kernel arith5_kernel = (mode==MV_STANDARD) ? clarith5_raw : clarith5;
 
-	/* A = I + S.D.S
+	/* MV_SYMMETRIZED:
+	 * A = I + S.D.S
 	 * S = sqrt(C)
 	 * A.x = x + S.D.(S.x)
 	 * A(H).x = x + (S(T).D(T).S(T).x(*))(*)
+	 *
+	 * MV_STANDARD:
+	 * A = D
+	 * A.x = D.x
+	 * A(H).x = (D(T).x(*))(*)
+	 *
 	 * C,S - diagonal => symmetric
 	 * (!! will change if tensor (non-diagonal) polarizability is used !!)
 	 * D - symmetric except for interactions which break the reciprocity of the Green's tensor (none currently)
@@ -208,28 +215,4 @@ static void MatVecCore (doublecomplex * restrict argvec,    // the argument vect
 #endif
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;
-}
-
-//======================================================================================================================
-
-void MatVecRaw (doublecomplex * restrict argvec,    // the argument vector
-                doublecomplex * restrict resultvec, // the result vector
-                double *inprod,         // the resulting inner product
-                const bool her,         // whether Hermitian transpose of the matrix is used
-                TIME_TYPE *timing,      // this variable is incremented by total time
-                TIME_TYPE *comm_timing) // this variable is incremented by communication time
-{
-	MatVecCore(argvec,resultvec,inprod,her,timing,comm_timing,true);
-}
-
-//======================================================================================================================
-
-void MatVec (doublecomplex * restrict argvec,    // the argument vector
-             doublecomplex * restrict resultvec, // the result vector
-             double *inprod,         // the resulting inner product
-             const bool her,         // whether Hermitian transpose of the matrix is used
-             TIME_TYPE *timing,      // this variable is incremented by total time
-             TIME_TYPE *comm_timing) // this variable is incremented by communication time
-{
-	MatVecCore(argvec,resultvec,inprod,her,timing,comm_timing,false);
 }
