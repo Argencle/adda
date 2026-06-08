@@ -206,7 +206,7 @@ static void Check_clBLAS_Err(const clblasStatus err,ERR_LOC_DECL)
 static void MatVec_wrapper(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,
 	enum matvec_mode mode,TIME_TYPE *timing,TIME_TYPE *comm_timing)
 /* function wrapper for MatVec to be called within the iterative solver if the solver is able to use clBLAS, i.e.
- * the host and GPU memory does not have to be synchronized. Currently it is only used in the BiCG solver.
+ * the host and GPU memory does not have to be synchronized. Currently it is used in the BiCG and Shifted CG solvers.
  */
 {
 #ifdef OCL_BLAS
@@ -1273,48 +1273,142 @@ ITER_FUNC(Shifted_CG)
 	static doublecomplex res=0;
 	static int i=0;
 	static double inprodRp1_max=0;
+#ifdef OCL_BLAS
+	cl_mem bufdot;
+	cl_mem bufvcur=bufargvec;
+	cl_mem bufAvecbuffer=bufresultvec;
+#endif
 
 	// The function accepts a single argument 'ph' describing a current phase to execute
 	switch (ph) {
 	case PHASE_VARS:
 	  return;
-	case PHASE_INIT:
+	case PHASE_INIT: {
+#ifdef OCL_BLAS
+		/* This initialization part need to be moved somewhere during further adoption of clBLAS
+		 * For now, we use braces around this case to allow internal variable declaration
+		 */
+		cl_uint major,minor,patch;
+		CLBLAS_CH_ERR(clblasGetVersion(&major,&minor,&patch));
+		if (!GREATER_EQ2(major,minor,CLBLAS_VER_REQ,CLBLAS_SUBVER_REQ)) LogError(ONE_POS,
+			"clBLAS library version (%u.%u) is too old. Version %d.%d or newer is required",
+			major,minor,CLBLAS_VER_REQ,CLBLAS_SUBVER_REQ);
+		D("clBLAS library version - %u.%u.%u",major,minor,patch);
+		D("clblasSetup started");
+		CLBLAS_CH_ERR(clblasSetup());
+		CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufvcur,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,rvec,0,
+			NULL,NULL));
+		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvcur,0,1,bufvcur,0,1,buftmp,1,&command_queue,0,NULL,
+			NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&pn,0,NULL,NULL));
+		my_clReleaseBuffer(bufdot);
+#else
 		// Calculate first basis vector.
 		// Calculate the pseudo norm of the residual (for simplicity, x=0)
 		pn=nDotProdSelf_conj(rvec,&Timing_OneIterComm);
+#endif
 		pn=csqrt(pn); // complex square root
+#ifdef OCL_BLAS
+		cl_double2 clinvpn = {.s={creal(1/pn),cimag(1/pn)}};
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvpn,bufvcur,0,1,1,&command_queue,0,NULL,NULL));
+#else
 		nMult_cmplx(vcur, rvec, 1/pn);
+#endif
 		beta_pr=pn;
 		// v0=0
+#ifdef OCL_BLAS
+		size_t scg_vec_rows=local_nRows;
+		size_t scg_array_rows=(size_t)num_used_n*local_nRows;
+		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufvpr));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&scg_vec_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufpArray));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&scg_array_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufxArray));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&scg_array_rows,NULL,0,NULL,NULL));
+#else
 		nInit(vpr);
+#endif
 		for(i=0;i<num_used_n;i++) {
 			lArray[i]=0;
 			uArray[i]=0;
+#ifndef OCL_BLAS
 			nInit(pArray[i]);
 			nInit(xArray[i]);
+#endif
 			ref_index=ref_indexArr[i];
 			cc=ccArr[i];
 			sigmaArray[i]=1/cc[0][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
 			continue_flag[i]=true;
 		}
+#ifdef OCL_BLAS
+		CL_CH_ERR(clFinish(command_queue));
+#endif
 	  return;
+	}
 	case PHASE_ITER:
 		// Lanczos Process
 		// A.v
+#ifdef OCL_BLAS
+		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
+		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_STANDARD,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+#else
 		MatVec(vcur,Avecbuffer,NULL,false,MV_STANDARD,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+#endif
 		// alfa1
+#ifdef OCL_BLAS
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvcur,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,
+			NULL,NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&alfa1,0,NULL,NULL));
+#else
 		alfa1=nDotProd_conj(vcur, Avecbuffer, &Timing_OneIterComm);
+#endif
 		// vtmp=-alfa1*vcur+A.vcur
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufAvecbuffer,bufvtmp,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,
+			NULL));
+		cl_double2 clmalfa1 = {.s={creal(-alfa1),cimag(-alfa1)}};
+		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmalfa1,bufvcur,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+#else
 		nLinComb_cmplx(vtmp,vcur,Avecbuffer,-alfa1,1,NULL,&Timing_OneIterComm);
+#endif
 		// vtmp=vtmp-beta0*vprev
+#ifdef OCL_BLAS
+		cl_double2 clmbeta = {.s={creal(-beta_pr),cimag(-beta_pr)}};
+		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmbeta,bufvpr,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+#else
 		nIncrem01_cmplx(vtmp,vpr,-beta_pr,NULL,&Timing_OneIterComm);
+#endif
 		// beta_cur=|vtmp|ps
+#ifdef OCL_BLAS
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,
+			NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&beta_cur,0,NULL,NULL));
+#else
 		beta_cur=nDotProdSelf_conj(vtmp,&Timing_OneIterComm);
+#endif
 		beta_cur=csqrt(beta_cur);
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvtmp,bufvnext,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufvnext,0,1,1,&command_queue,0,NULL,NULL));
+#else
 		nMult_cmplx(vnext, vtmp, 1/beta_cur);
+#endif
 		// norm of vcur
+#ifdef OCL_BLAS
+		double vnorm2=0;
+		/* clblasDznrm2 may fail to compile on modern OpenCL implementations, so use the same workaround as BiCG:
+		 * dotc(vcur,vcur) returns the squared norm in the real part of the complex result.
+		 */
+		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvcur,0,1,bufvcur,0,1,buftmp,1,&command_queue,0,NULL,
+			NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vnorm2,0,NULL,NULL));
+		vnorm=csqrt(vnorm2);
+#else
 		vnorm=nNorm2(vcur,&Timing_OneIterComm);
 		vnorm=csqrt(vnorm);
+#endif
 		// CG iterates for all shifted systems
 		inprodRp1_max=0;
 		for(i=0;i<num_used_n;i++) {
@@ -1324,9 +1418,25 @@ ITER_FUNC(Shifted_CG)
 				if(niter==1) uArray[i]=beta_pr-lArray[i]*uArray[i];
 				else uArray[i]=-lArray[i]*uArray[i];
 				// pArray[i]=vcur-lArray[i]*pArray[i]
+#ifdef OCL_BLAS
+				const size_t offset=(size_t)i*local_nRows;
+				cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
+				CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,NULL));
+				cl_double2 clunit = {.s={1,0}};
+				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,NULL,
+					NULL));
+#else
 				nIncrem10_cmplx(pArray[i],vcur,-lArray[i],NULL,&Timing_OneIterComm);
+#endif
 				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
+#ifdef OCL_BLAS
+				const doublecomplex xcoef=uArray[i]/dArray[i];
+				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
+				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,&command_queue,
+					0,NULL,NULL));
+#else
 				nIncrem01_cmplx(xArray[i],pArray[i],uArray[i]/dArray[i],NULL,&Timing_OneIterComm);
+#endif
 				//current residual
 				res=vnorm*cabs(uArray[i]); // without normalization
 				inprodRp1Array[i]=conj(res)*res;
@@ -1342,8 +1452,15 @@ ITER_FUNC(Shifted_CG)
 		}
 		inprodRp1=inprodRp1_max; // outputs are only for the highest refractive index
 		// vpr=vcur, vcur=vnext, beta_pr=beta_cur
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufvpr,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvnext,bufvcur,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		CL_CH_ERR(clFinish(command_queue));
+		my_clReleaseBuffer(bufdot);
+#else
 		nCopy(vpr,vcur);
 		nCopy(vcur,vnext);
+#endif
 		beta_pr=beta_cur;
 	  return;
 	}
@@ -1721,6 +1838,10 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 			"number of iterations (%d)",params[ind_m].mc);
 	}
 	if (IterMethod==IT_SHIFTED_CG){
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxArray,CL_TRUE,0,(size_t)num_used_n*local_nRows*
+			sizeof(doublecomplex),xArray[0],0,NULL,NULL));
+#endif
 		nCopy(xvec,xArray[0]);
 		// TODO: If we use recalc_resid then we have to calculate rvec here,
 		// and explicitly multiply a matrix by a vector (A.x), because in the SCG, res is a number.
