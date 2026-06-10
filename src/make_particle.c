@@ -1930,7 +1930,7 @@ void InitShape(void)
 		if (prognosis) small_Nmat=Nmat;
 		else PrintError("Only %d refractive indices are given. %d are required",Nmat,Nmat_need);
 	}
-	else if (Nmat>Nmat_need)
+	else if (Nmat>Nmat_need && IterMethod!=IT_SHIFTED_BICG_CS)
 		LogWarning(EC_INFO,ONE_POS,"More refractive indices are given (%d) than actually used (%d)",Nmat,Nmat_need);
 	Nmat=Nmat_need;
 
