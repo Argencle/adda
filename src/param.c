@@ -2263,6 +2263,8 @@ void VariablesInterconnect(void)
 	// temporary solution, until parsing of refractive indices is changed not to rely on knowing iterative solvers 
 	if (IterMethod==IT_SHIFTED_BICG_CS && (num_used_n==UNDEF || num_used_n!=Nmat))
 		PrintError("Currently '-iter sbicg' (if used) must be specified before '-m ...'");
+	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
+		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
 #ifdef SPARSE
 	if (shape==SH_SPHERE) PrintError("Sparse mode requires shape to be read from file (-shape read ...)");
 #endif
