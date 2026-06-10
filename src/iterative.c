@@ -63,7 +63,7 @@ extern time_t last_chp_wt;
 extern TIME_TYPE Timing_OneIter,Timing_OneIterComm,Timing_InitIter,Timing_InitIterComm,Timing_IntFieldOneComm,
 	Timing_MVP,Timing_MVPComm,Timing_OneIterMVP,Timing_OneIterMVPComm;
 extern size_t TotalIter;
-extern doublecomplex ccArr[MAX_N_SCG][MAX_NMAT][3];
+extern doublecomplex ccArr[MAX_N_SHIFTED][MAX_NMAT][3];
 extern doublecomplex (*cc)[3];
 
 // LOCAL VARIABLES
@@ -117,7 +117,7 @@ ITER_FUNC(CGNR);
 ITER_FUNC(CSYM);
 ITER_FUNC(QMR_CS);
 ITER_FUNC(QMR_CS_2);
-ITER_FUNC(Shifted_CG);
+ITER_FUNC(Shifted_BiCG_CS);
 /* TO ADD NEW ITERATIVE SOLVER
  * Add the line to this list in the alphabetical order, analogous to the ones already present. The variable part is the
  * name of the function, implementing the method. The macros expands to a function prototype.
@@ -131,7 +131,7 @@ static const struct iter_params_struct params[]={
 	{IT_CSYM,10,6,2,CSYM},
 	{IT_QMR_CS,50000,8,3,QMR_CS},
 	{IT_QMR_CS_2,50000,5,2,QMR_CS_2},
-	{IT_SHIFTED_CG,50000,3,3,Shifted_CG}
+	{IT_SHIFTED_BICG_CS,50000,3,3,Shifted_BiCG_CS}
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * Add its parameters to this list in the alphabetical order. The parameters, in order of appearance, are identifier
 	 * (specified in const.h), maximum allowed number of iterations without the residual decrease, numbers of additional
@@ -206,7 +206,7 @@ static void Check_clBLAS_Err(const clblasStatus err,ERR_LOC_DECL)
 static void MatVec_wrapper(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,
 	enum matvec_mode mode,TIME_TYPE *timing,TIME_TYPE *comm_timing)
 /* function wrapper for MatVec to be called within the iterative solver if the solver is able to use clBLAS, i.e.
- * the host and GPU memory does not have to be synchronized. Currently it is used in the BiCG and Shifted CG solvers.
+ * the host and GPU memory does not have to be synchronized. Currently it is used in the BiCG and Shifted BiCG CS solvers.
  */
 {
 #ifdef OCL_BLAS
@@ -1259,7 +1259,7 @@ ITER_FUNC(QMR_CS_2)
 #undef EPS2
 
 //======================================================================================================================
-ITER_FUNC(Shifted_CG)
+ITER_FUNC(Shifted_BiCG_CS)
 // Short comment, providing full name of the iterative solver
 {
 // It is recommended to define all nontrivial constants here
@@ -1318,14 +1318,14 @@ ITER_FUNC(Shifted_CG)
 		beta_pr=pn;
 		// v0=0
 #ifdef OCL_BLAS
-		size_t scg_vec_rows=local_nRows;
-		size_t scg_array_rows=(size_t)num_used_n*local_nRows;
+		size_t shifted_vec_rows=local_nRows;
+		size_t shifted_array_rows=(size_t)num_used_n*local_nRows;
 		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufvpr));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&scg_vec_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_vec_rows,NULL,0,NULL,NULL));
 		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufpArray));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&scg_array_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_array_rows,NULL,0,NULL,NULL));
 		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufxArray));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&scg_array_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_array_rows,NULL,0,NULL,NULL));
 #else
 		nInit(vpr);
 #endif
@@ -1743,7 +1743,7 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
 	if (!load_chpoint) {
-		if (IterMethod==IT_SHIFTED_CG) nCopy(pvec,Einc);
+		if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,Einc);
 		else nMult_mat(pvec,Einc,cc_sqrt);
 		temp=nNorm2(pvec,&Timing_InitIterComm); // |r_0|^2 when x_0=0
 		resid_scale=1/temp;
@@ -1837,14 +1837,14 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		else if (counter>params[ind_m].mc) LogError(ONE_POS,"Residual norm haven't decreased for maximum allowed "
 			"number of iterations (%d)",params[ind_m].mc);
 	}
-	if (IterMethod==IT_SHIFTED_CG){
+	if (IterMethod==IT_SHIFTED_BICG_CS){
 #ifdef OCL_BLAS
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxArray,CL_TRUE,0,(size_t)num_used_n*local_nRows*
 			sizeof(doublecomplex),xArray[0],0,NULL,NULL));
 #endif
 		nCopy(xvec,xArray[0]);
 		// TODO: If we use recalc_resid then we have to calculate rvec here,
-		// and explicitly multiply a matrix by a vector (A.x), because in the SCG, res is a number.
+		// and explicitly multiply a matrix by a vector (A.x), because in the shifted solver, res is a number.
 	}
 
 	if (recalc_resid) { // compute and print final residual norm
@@ -1866,7 +1866,7 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	if ((fp2 = fopen("xvec after iter alg (ADDA).txt", "w")) == NULL) printf("File is not open");
 	for(size_t i=0;i<local_nRows;i++) fprintf(fp2,"%.30f + %.30f*I,\n", creal(xvec[i]), cimag(xvec[i]));
 	fclose(fp2);*/
-	if (IterMethod==IT_SHIFTED_CG) nCopy(pvec,xArray[0]);
+	if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,xArray[0]);
 	else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
 	return (niter-1); // the number of iterations elapsed

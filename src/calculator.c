@@ -58,17 +58,17 @@ doublecomplex * restrict EyzplX, * restrict EyzplY; // same for scattering in yz
 double dtheta_deg,dtheta_rad; // delta theta in degrees and radians
 doublecomplex * restrict ampl_alphaX,* restrict ampl_alphaY; // amplitude matrix for different values of alpha
 double * restrict muel_alpha; // mueller matrix for different values of alpha
-doublecomplex **scgEplaneX_store, **scgEplaneY_store;
-doublecomplex **scgEyzplX_store, **scgEyzplY_store;
-doublecomplex **scgEgridX_store, **scgEgridY_store;
-doublecomplex **scgAmplAlphaX_store, **scgAmplAlphaY_store;
-double * restrict scgCext_store, * restrict scgCabs_store;
+doublecomplex **shiftedEplaneX_store, **shiftedEplaneY_store;
+doublecomplex **shiftedEyzplX_store, **shiftedEyzplY_store;
+doublecomplex **shiftedEgridX_store, **shiftedEgridY_store;
+doublecomplex **shiftedAmplAlphaX_store, **shiftedAmplAlphaY_store;
+double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 
 // used in crosssec.c
 doublecomplex * restrict E_ad; // complex field E, calculated for alldir
 double * restrict E2_alldir; // square of E (scaled with msub, so ~ Poynting vector or dC/dOmega), calculated for alldir
 doublecomplex (*cc)[3]; // a pointer to array of 3 doubles
-doublecomplex ccArr[MAX_N_SCG][MAX_NMAT][3]; // couple constants
+doublecomplex ccArr[MAX_N_SHIFTED][MAX_NMAT][3]; // couple constants
 #ifndef SPARSE
 doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ; // arrays of exponents along 3 axes (for calc_field)
 #endif
@@ -303,7 +303,7 @@ static const struct draine_coefficients draine_precalc_data_array[] = {
 int CalculateE(enum incpol which,enum Eftype type);
 bool TestExtendThetaRange(void);
 void MuellerMatrix(void);
-void RestoreScgScatFields(int idx);
+void RestoreShiftedScatFields(int idx);
 void SaveMuellerAndCS(double * restrict in);
 
 //======================================================================================================================
@@ -637,7 +637,7 @@ static void calculate_one_orientation(double * restrict res)
 		PRINTFB("\nhere we go, calc Y\n\n");
 		if (!orient_avg) fprintf(logfile,"\nhere we go, calc Y\n\n");
 	}
-	if (IterMethod!=IT_SHIFTED_CG) {
+	if (IterMethod!=IT_SHIFTED_BICG_CS) {
 		cc=ccArr[0]; // this code may be elsewhere before
 		cc_sqrt=cc_sqrtArr[0];
 		chi_inv=chi_invArr[0];
@@ -676,14 +676,14 @@ static void calculate_one_orientation(double * restrict res)
 		if (CalculateE(INCPOL_X,CE_NORMAL)==CHP_EXIT) return;
 	}
 	D("CalculateE finished");
-	if (IterMethod!=IT_SHIFTED_CG) MuellerMatrix();
+	if (IterMethod!=IT_SHIFTED_BICG_CS) MuellerMatrix();
 	else if (!orient_avg) {
 		const char *directoryOld = directory; // store the original address of the folder for second call of CalculateE
 		for(int i=0;i<num_used_n;i++){
-			char scg_dir[MAX_DIRNAME];
-			BuildScgDirectoryName(i,directoryOld,scg_dir,MAX_DIRNAME);
-			directory=scg_dir;
-			RestoreScgScatFields(i);
+			char shifted_dir[MAX_DIRNAME];
+			BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+			directory=shifted_dir;
+			RestoreShiftedScatFields(i);
 			MuellerMatrix();
 		}
 		directory=directoryOld;
@@ -693,14 +693,14 @@ static void calculate_one_orientation(double * restrict res)
 		const size_t orient_dim=block_theta+2;
 
 		tstart=GET_TIME();
-		if (IterMethod==IT_SHIFTED_CG) {
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
 			const char *directoryOld=directory;
 
 			for (int i=0;i<num_used_n;i++) {
-				char scg_dir[MAX_DIRNAME];
-				BuildScgDirectoryName(i,directoryOld,scg_dir,MAX_DIRNAME);
-				directory=scg_dir;
-				RestoreScgScatFields(i);
+				char shifted_dir[MAX_DIRNAME];
+				BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+				directory=shifted_dir;
+				RestoreShiftedScatFields(i);
 				MuellerMatrix();
 				if (store_mueller) PRINTFB("\nError of alpha integration (Mueller) is "GFORMDEF"\n",
 					Romberg1D(parms_alpha,block_theta,muel_alpha,res+i*orient_dim+2));
@@ -808,7 +808,7 @@ static void AllocateEverything(void)
 			}
 			memory+=2*tmp;
 			break;
-		case IT_SHIFTED_CG:
+		case IT_SHIFTED_BICG_CS:
 			tmp2=sizeof(doublecomplex)*(double)num_used_n;
 			tmp3=sizeof(doublecomplex)*(double)(local_nRows*num_used_n);
 
@@ -852,13 +852,13 @@ static void AllocateEverything(void)
 			temp_int=tmp;
 			MALLOC_VECTOR(EyzplX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EyzplY,complex,temp_int,ALL);
-			if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-				scgEyzplX_store=malloc_func(temp_int,num_used_n);
-				scgEyzplY_store=malloc_func(temp_int,num_used_n);
+			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+				shiftedEyzplX_store=malloc_func(temp_int,num_used_n);
+				shiftedEyzplY_store=malloc_func(temp_int,num_used_n);
 			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
-		if (IterMethod==IT_SHIFTED_CG && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 	}
 	if (scat_plane) {
 		tmp=2*(double)nTheta;
@@ -867,13 +867,13 @@ static void AllocateEverything(void)
 			temp_int=tmp;
 			MALLOC_VECTOR(EplaneX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EplaneY,complex,temp_int,ALL);
-			if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-				scgEplaneX_store=malloc_func(temp_int,num_used_n);
-				scgEplaneY_store=malloc_func(temp_int,num_used_n);
+			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+				shiftedEplaneX_store=malloc_func(temp_int,num_used_n);
+				shiftedEplaneY_store=malloc_func(temp_int,num_used_n);
 			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
-		if (IterMethod==IT_SHIFTED_CG && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 	}
 	if (all_dir) {
 		ReadAlldirParms(alldir_parms);
@@ -898,13 +898,13 @@ static void AllocateEverything(void)
 			temp_int=tmp;
 			MALLOC_VECTOR(EgridX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EgridY,complex,temp_int,ALL);
-			if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-				scgEgridX_store=malloc_func(temp_int,num_used_n);
-				scgEgridY_store=malloc_func(temp_int,num_used_n);
+			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+				shiftedEgridX_store=malloc_func(temp_int,num_used_n);
+				shiftedEgridY_store=malloc_func(temp_int,num_used_n);
 			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
-		if (IterMethod==IT_SHIFTED_CG && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 		if (phi_integr && IFROOT) {
 			tmp=16*(double)angles.phi.N;
 			if (!prognosis) {
@@ -920,7 +920,7 @@ static void AllocateEverything(void)
 		const size_t orient_dim=block_theta+2;
 		size_t orient_count;
 
-		if (IterMethod==IT_SHIFTED_CG) orient_count=num_used_n;
+		if (IterMethod==IT_SHIFTED_BICG_CS) orient_count=num_used_n;
 		else orient_count=1;
 
 		tmp=2*((double)nTheta)*alpha_int.N;
@@ -931,26 +931,26 @@ static void AllocateEverything(void)
 				temp_int=tmp;
 				MALLOC_VECTOR(ampl_alphaX,complex,temp_int,ONE);
 				MALLOC_VECTOR(ampl_alphaY,complex,temp_int,ONE);
-				if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-					scgAmplAlphaX_store=malloc_func(temp_int,num_used_n);
-					scgAmplAlphaY_store=malloc_func(temp_int,num_used_n);
+				if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+					shiftedAmplAlphaX_store=malloc_func(temp_int,num_used_n);
+					shiftedAmplAlphaY_store=malloc_func(temp_int,num_used_n);
 				}
 			}
 		}
 		memory += 2*tmp*sizeof(doublecomplex);
-		if (store_mueller && IterMethod==IT_SHIFTED_CG && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
+		if (store_mueller && IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 			if (IFROOT) {
 				if (!prognosis) {
 					MALLOC_VECTOR(muel_alpha,double,block_theta*alpha_int.N+2,ONE);
 					muel_alpha+=2;
 					MALLOC_VECTOR(out,double,orient_count*orient_dim,ONE);
-					if (IterMethod==IT_SHIFTED_CG) {
-						MALLOC_VECTOR(scgCext_store,double,num_used_n,ONE);
-						MALLOC_VECTOR(scgCabs_store,double,num_used_n,ONE);
+					if (IterMethod==IT_SHIFTED_BICG_CS) {
+						MALLOC_VECTOR(shiftedCext_store,double,num_used_n,ONE);
+						MALLOC_VECTOR(shiftedCabs_store,double,num_used_n,ONE);
 						}
 					}
 					memory += (8*tmp+2 + orient_count*orient_dim)*sizeof(double);
-					if (IterMethod==IT_SHIFTED_CG) {
+					if (IterMethod==IT_SHIFTED_BICG_CS) {
 						memory += 2*num_used_n*sizeof(double);
 					}
 				}
@@ -1034,7 +1034,7 @@ void FreeEverything(void)
 			Free_cVector(vec1);
 			Free_cVector(vec2);
 			break;
-		case IT_SHIFTED_CG:
+		case IT_SHIFTED_BICG_CS:
 			free(pArray);
 			free(xArray);
 			free(inprodRp1Array);
@@ -1057,21 +1057,21 @@ void FreeEverything(void)
 	if (yzplane) {
 		Free_cVector(EyzplX);
 		Free_cVector(EyzplY);
-		if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-			Free_general(scgEyzplX_store[0]);
-			Free_general(scgEyzplX_store);
-			Free_general(scgEyzplY_store[0]);
-			Free_general(scgEyzplY_store);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+			Free_general(shiftedEyzplX_store[0]);
+			Free_general(shiftedEyzplX_store);
+			Free_general(shiftedEyzplY_store[0]);
+			Free_general(shiftedEyzplY_store);
 		}
 	}
 	if (scat_plane) {
 		Free_cVector(EplaneX);
 		Free_cVector(EplaneY);
-		if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-			Free_general(scgEplaneX_store[0]);
-			Free_general(scgEplaneX_store);
-			Free_general(scgEplaneY_store[0]);
-			Free_general(scgEplaneY_store);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+			Free_general(shiftedEplaneX_store[0]);
+			Free_general(shiftedEplaneX_store);
+			Free_general(shiftedEplaneY_store[0]);
+			Free_general(shiftedEplaneY_store);
 		}
 	}
 	if (all_dir) {
@@ -1085,11 +1085,11 @@ void FreeEverything(void)
 		Free_general(angles.phi.val);
 		Free_cVector(EgridX);
 		Free_cVector(EgridY);
-		if (IterMethod==IT_SHIFTED_CG && IFROOT) {
-			Free_general(scgEgridX_store[0]);
-			Free_general(scgEgridX_store);
-			Free_general(scgEgridY_store[0]);
-			Free_general(scgEgridY_store);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+			Free_general(shiftedEgridX_store[0]);
+			Free_general(shiftedEgridX_store);
+			Free_general(shiftedEgridY_store[0]);
+			Free_general(shiftedEgridY_store);
 		}
 		if (phi_integr && IFROOT) {
 			Free_general(muel_phi);
@@ -1105,18 +1105,18 @@ void FreeEverything(void)
 			if (store_mueller) {
 				Free_cVector(ampl_alphaX);
 				Free_cVector(ampl_alphaY);
-				if (IterMethod==IT_SHIFTED_CG) {
-					Free_general(scgAmplAlphaX_store[0]);
-					Free_general(scgAmplAlphaX_store);
-					Free_general(scgAmplAlphaY_store[0]);
-					Free_general(scgAmplAlphaY_store);
+				if (IterMethod==IT_SHIFTED_BICG_CS) {
+					Free_general(shiftedAmplAlphaX_store[0]);
+					Free_general(shiftedAmplAlphaX_store);
+					Free_general(shiftedAmplAlphaY_store[0]);
+					Free_general(shiftedAmplAlphaY_store);
 				}
 				}
 				Free_general(muel_alpha-2);
 				Free_general(out);
-				if (IterMethod==IT_SHIFTED_CG) {
-					Free_general(scgCext_store);
-					Free_general(scgCabs_store);
+				if (IterMethod==IT_SHIFTED_BICG_CS) {
+					Free_general(shiftedCext_store);
+					Free_general(shiftedCabs_store);
 				}
 			}
 			Free_general(alpha_int.val);
@@ -1170,10 +1170,10 @@ void Calculator (void)
 	if (orient_avg) {
 		const size_t orient_dim=block_theta+2;
 		size_t orient_count;
-		int conv_comp[MAX_N_SCG];
+		int conv_comp[MAX_N_SHIFTED];
 		int conv_comp_N=0;
 
-		if (IterMethod==IT_SHIFTED_CG) {
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
 			orient_count=num_used_n;
 			for (int i=0;i<num_used_n;i++) conv_comp[conv_comp_N++]=i*orient_dim;
 		}
@@ -1189,13 +1189,13 @@ void Calculator (void)
 			* TODO: replace by a call without unnecessary overhead
 				*/
 			BcastOrient(&finish_avg,&finish_avg,&finish_avg);
-			if (IterMethod==IT_SHIFTED_CG) {
+			if (IterMethod==IT_SHIFTED_BICG_CS) {
 				const char *directoryOld=directory;
 
 				for (int i=0;i<num_used_n;i++) {
-					char scg_dir[MAX_DIRNAME];
-					BuildScgDirectoryName(i,directoryOld,scg_dir,MAX_DIRNAME);
-					directory=scg_dir;
+					char shifted_dir[MAX_DIRNAME];
+					BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+					directory=shifted_dir;
 					SaveMuellerAndCS(out+i*orient_dim);
 				}
 				directory=directoryOld;

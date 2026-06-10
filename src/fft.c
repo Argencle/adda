@@ -1069,7 +1069,7 @@ void InitDmatrix(void)
 		CREATE_CL_BUFFER(bufxvec,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
 		CREATE_CL_BUFFER(bufrvec,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
 	}
-	if (IterMethod==IT_SHIFTED_CG) {
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
 		CREATE_CL_BUFFER(buftmp,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
 		CREATE_CL_BUFFER(bufvpr,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
 		CREATE_CL_BUFFER(bufvtmp,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
@@ -1502,7 +1502,7 @@ void Free_FFT_Dmat(void)
 		my_clReleaseBuffer(bufxvec);
 		my_clReleaseBuffer(bufrvec);
 	}
-	if (IterMethod==IT_SHIFTED_CG) {
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
 		my_clReleaseBuffer(buftmp);
 		my_clReleaseBuffer(bufvpr);
 		my_clReleaseBuffer(bufvtmp);

@@ -58,13 +58,13 @@ extern int term_width;
 extern int Nmat,Ncomp;
 //extern doublecomplex ref_index[MAX_NMAT];
 extern doublecomplex *ref_index;
-extern doublecomplex ref_indexArr[MAX_N_SCG][MAX_NMAT];
+extern doublecomplex ref_indexArr[MAX_N_SHIFTED][MAX_NMAT];
 //extern doublecomplex cc_sqrt[MAX_NMAT][3];
 extern doublecomplex (*cc_sqrt)[3];
-extern doublecomplex cc_sqrtArr[MAX_N_SCG][MAX_NMAT][3];
+extern doublecomplex cc_sqrtArr[MAX_N_SHIFTED][MAX_NMAT][3];
 //extern doublecomplex chi_inv[MAX_NMAT][3];
 extern doublecomplex (*chi_inv)[3];
-extern doublecomplex chi_invArr[MAX_N_SCG][MAX_NMAT][3];
+extern doublecomplex chi_invArr[MAX_N_SHIFTED][MAX_NMAT][3];
 extern unsigned char * restrict material;
 
 // iterative solver
@@ -103,7 +103,7 @@ extern size_t local_Nsmall;
 extern int local_z0,local_z1,local_z1_coer,local_Nz_unif;
 extern size_t local_Nz,local_x0,local_x1,local_Nx;
 
-// For Shifted CG algorithm:
+// For Shifted BiCG CS algorithm:
 extern doublecomplex *lArray;
 extern doublecomplex *dArray;
 extern doublecomplex *sigmaArray;

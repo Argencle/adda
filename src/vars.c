@@ -83,13 +83,13 @@ int Nmat;  // number of different domains (for each either scalar or tensor refr
 int Ncomp; // number of components of each refractive index (1 or 3)
 //doublecomplex ref_index[MAX_NMAT];  // a set of refractive indexes
 doublecomplex *ref_index;  // a set of refractive indexes
-doublecomplex ref_indexArr[MAX_N_SCG][MAX_NMAT];
+doublecomplex ref_indexArr[MAX_N_SHIFTED][MAX_NMAT];
 //doublecomplex cc_sqrt[MAX_NMAT][3]; // sqrt of couple constants
 doublecomplex (*cc_sqrt)[3]; // a pointer to array of 3 doubles
-doublecomplex cc_sqrtArr[MAX_N_SCG][MAX_NMAT][3]; // couple constants
+doublecomplex cc_sqrtArr[MAX_N_SHIFTED][MAX_NMAT][3]; // couple constants
 //doublecomplex chi_inv[MAX_NMAT][3]; // normalized inverse susceptibility: = 1/(V*chi)
 doublecomplex (*chi_inv)[3];
-doublecomplex chi_invArr[MAX_N_SCG][MAX_NMAT][3]; // couple constants
+doublecomplex chi_invArr[MAX_N_SHIFTED][MAX_NMAT][3]; // couple constants
 unsigned char * restrict material;  // material: index for cc
 
 // iterative solver
@@ -159,7 +159,7 @@ int local_z1_coer;        // ending z, coerced to be not greater than boxZ (and 
 	// starting, ending x for current processor and number of x layers (based on the division of smallX)
 size_t local_x0,local_x1,local_Nx;
 
-// For Shifted CG algorithm:
+// For Shifted BiCG CS algorithm:
 doublecomplex *lArray;
 doublecomplex *dArray;
 doublecomplex *sigmaArray;

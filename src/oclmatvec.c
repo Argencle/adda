@@ -50,7 +50,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 /* This function implements matrix-vector product. If we want to calculate the inner product as well, we pass 'inprod'
  * as a non-NULL pointer. if 'inprod' is NULL, we don't calculate it. 'argvec' always remains unchanged afterwards,
  * however it is not strictly const - some manipulations may occur during the execution. comm_timing can be NULL, then
- * it is ignored. In MV_STANDARD mode it computes only the convolution D.x, which is used by Shifted_CG.
+ * it is ignored. In MV_STANDARD mode it computes only the convolution D.x, which is used by Shifted_BiCG_CS.
  */
 {
 	size_t j;

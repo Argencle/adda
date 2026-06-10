@@ -52,7 +52,7 @@ bool bufupload=true;
 cl_mem buftmp;  // temporary buffer for dot products and Norm (as required by clBLAS library)
 cl_mem bufrvec; // buffer used in iterative solver
 cl_mem bufxvec; // buffer used in iterative solver
-cl_mem bufvpr;  // buffers used in Shifted CG solver
+cl_mem bufvpr;  // buffers used in Shifted BiCG CS solver
 cl_mem bufvtmp;
 cl_mem bufvnext;
 cl_mem bufpArray;

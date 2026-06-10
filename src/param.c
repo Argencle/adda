@@ -556,7 +556,7 @@ static struct opt_struct options[]={
 		 * !!! If subarguments are added, second-to-last argument should be changed from 1 to UNDEF, and consistency
 		 * test for number of arguments should be implemented in PARSE_FUNC(int_surf) below.
 		 */
-	{PAR(iter),"{bcgs2|bicg|bicgstab|cgnr|csym|qmr|qmr2|scg}","Sets the iterative solver.\n"
+	{PAR(iter),"{bcgs2|bicg|bicgstab|cgnr|csym|qmr|qmr2|sbicg}","Sets the iterative solver.\n"
 		"Default: qmr",1,NULL},
 		/* TO ADD NEW ITERATIVE SOLVER
 		 * add the short name, used to define the new iterative solver in the command line, to the list "{...}" in the
@@ -1324,7 +1324,7 @@ PARSE_FUNC(iter)
 	else if (strcmp(argv[1],"csym")==0) IterMethod=IT_CSYM;
 	else if (strcmp(argv[1],"qmr")==0) IterMethod=IT_QMR_CS;
 	else if (strcmp(argv[1],"qmr2")==0) IterMethod=IT_QMR_CS_2;
-	else if (strcmp(argv[1],"scg")==0) IterMethod=IT_SHIFTED_CG;
+	else if (strcmp(argv[1],"sbicg")==0) IterMethod=IT_SHIFTED_BICG_CS;
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * add the line to else-if sequence above in the alphabetical order, analogous to the ones already present. The
 	 * variable parts of the line are its name used in command line and its descriptor, defined in const.h
@@ -1349,7 +1349,7 @@ PARSE_FUNC(m)
 	if (IS_ODD(Narg) || Narg==0) NargError(Narg,"even");
 	Nmat=Nmat_given=Narg/2;
 	// TODO: this need to be changed, IterMethod is not necessarily set by this point
-	if(IterMethod!=IT_SHIFTED_CG) {
+	if(IterMethod!=IT_SHIFTED_BICG_CS) {
 		if (Nmat>MAX_NMAT) PrintErrorHelp("Too many materials (%d), maximum %d are supported. You may increase "
 			"parameter MAX_NMAT in const.h and recompile.",Nmat,MAX_NMAT);
 		num_used_n=UNDEF;
@@ -1363,8 +1363,8 @@ PARSE_FUNC(m)
 		}
 	}
 	else {
-		if (Nmat>MAX_N_SCG) PrintErrorHelp("Too many materials (%d), maximum %d are supported for Shifted-CG iterative "
-			"solver. You may increase parameter MAX_N_SCG in const.h and recompile.",Nmat,MAX_N_SCG);
+		if (Nmat>MAX_N_SHIFTED) PrintErrorHelp("Too many materials (%d), maximum %d are supported for Shifted BiCG-CS iterative "
+			"solver. You may increase parameter MAX_N_SHIFTED in const.h and recompile.",Nmat,MAX_N_SHIFTED);
 		num_used_n=Nmat;
 		for(i=0;i<num_used_n;i++) {
 			ref_index=ref_indexArr[i];
@@ -2261,8 +2261,8 @@ void VariablesInterconnect(void)
 	}
 	InteractionRealArgs=(beamtype==B_DIPOLE); // other cases may be added here in the future (e.g. nearfields)
 	// temporary solution, until parsing of refractive indices is changed not to rely on knowing iterative solvers 
-	if (IterMethod==IT_SHIFTED_CG && (num_used_n==UNDEF || num_used_n!=Nmat))
-		PrintError("Currently '-iter scg' (if used) must be specified before '-m ...'");
+	if (IterMethod==IT_SHIFTED_BICG_CS && (num_used_n==UNDEF || num_used_n!=Nmat))
+		PrintError("Currently '-iter sbicg' (if used) must be specified before '-m ...'");
 #ifdef SPARSE
 	if (shape==SH_SPHERE) PrintError("Sparse mode requires shape to be read from file (-shape read ...)");
 #endif
@@ -2327,7 +2327,7 @@ void VariablesInterconnect(void)
 		UpdateSymVec(prop);
 		if (beam_asym) UpdateSymVec(beam_center);
 	}
-	ipr_required=(IterMethod==IT_BICGSTAB || IterMethod==IT_CGNR || IterMethod==IT_SHIFTED_CG);
+	ipr_required=(IterMethod==IT_BICGSTAB || IterMethod==IT_CGNR || IterMethod==IT_SHIFTED_BICG_CS);
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * add the new iterative solver to the above line, if it requires inner product calculation during matrix-vector
 	 * multiplication (i.e. calls MatVec function with non-NULL third argument)
@@ -2364,8 +2364,8 @@ void FinalizeSymmetry(void) {
 
 //======================================================================================================================
 
-void BuildScgDirectoryName(const int idx,const char *base_dir,char *out,const size_t out_size)
-// build output subdirectory name for the given refractive index in Shifted_CG mode
+void BuildShiftedDirectoryName(const int idx,const char *base_dir,char *out,const size_t out_size)
+// build output subdirectory name for the given refractive index in Shifted BiCG CS mode
 {
 	SnprintfErr(ONE_POS,out,out_size,"%s/m%.10g_%.10g",
 		base_dir,creal(ref_indexArr[idx][0]),cimag(ref_indexArr[idx][0]));
@@ -2410,7 +2410,7 @@ void DirectoryLog(const int argc,char **argv)
 		 * relevant buffers (for filenames or messages).
 		 */
 		static char sbuffer[MAX_LINE];
-		if(IterMethod!=IT_SHIFTED_CG)
+		if(IterMethod!=IT_SHIFTED_BICG_CS)
 			sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,creal(ref_index[0]));
 		else
 			sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME"-"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,
@@ -2429,11 +2429,11 @@ void DirectoryLog(const int argc,char **argv)
 	if (IFROOT) {
 		MkDirErr(directory,ONE_POS);
 		PRINTFB("all data is saved in '%s'\n",directory);
-		if (IterMethod==IT_SHIFTED_CG) {
-			char scg_dir[MAX_DIRNAME];
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
+			char shifted_dir[MAX_DIRNAME];
 			for (i=0;i<num_used_n;i++) {
-				BuildScgDirectoryName(i,directory,scg_dir,MAX_DIRNAME);
-				MkDirErr(scg_dir,ONE_POS);
+				BuildShiftedDirectoryName(i,directory,shifted_dir,MAX_DIRNAME);
+				MkDirErr(shifted_dir,ONE_POS);
 			}
 		}
 	}
@@ -2674,7 +2674,7 @@ void PrintInfo(void)
 			case IT_CSYM: fprintf(logfile,"CSYM\n"); break;
 			case IT_QMR_CS: fprintf(logfile,"QMR (complex symmetric)\n"); break;
 			case IT_QMR_CS_2: fprintf(logfile,"2-term QMR (complex symmetric)\n"); break;
-			case IT_SHIFTED_CG: fprintf(logfile,"Shifted CG\n"); break;
+			case IT_SHIFTED_BICG_CS: fprintf(logfile,"Shifted BiCG (complex symmetric)\n"); break;
 		}
 		/* TO ADD NEW ITERATIVE SOLVER
 		 * add a case above in the alphabetical order, analogous to the ones already present. The variable parts of the

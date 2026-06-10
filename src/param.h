@@ -31,7 +31,7 @@ extern opt_index opt; // defined in param.c
 
 void PrintErrorHelp(const char * restrict fmt, ... ) ATT_PRINTF(1,2) ATT_NORETURN;
 
-void BuildScgDirectoryName(int idx,const char *base_dir,char *out,size_t out_size);
+void BuildShiftedDirectoryName(int idx,const char *base_dir,char *out,size_t out_size);
 
 //======================================================================================================================
 
