@@ -2367,7 +2367,7 @@ void FinalizeSymmetry(void) {
 void BuildScgDirectoryName(const int idx,const char *base_dir,char *out,const size_t out_size)
 // build output subdirectory name for the given refractive index in Shifted_CG mode
 {
-	SnprintfErr(ONE_POS,out,out_size,"%s/m%.10g %.10g",
+	SnprintfErr(ONE_POS,out,out_size,"%s/m%.10g_%.10g",
 		base_dir,creal(ref_indexArr[idx][0]),cimag(ref_indexArr[idx][0]));
 }
 
