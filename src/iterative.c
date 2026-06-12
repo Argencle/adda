@@ -63,8 +63,6 @@ extern time_t last_chp_wt;
 extern TIME_TYPE Timing_OneIter,Timing_OneIterComm,Timing_InitIter,Timing_InitIterComm,Timing_IntFieldOneComm,
 	Timing_MVP,Timing_MVPComm,Timing_OneIterMVP,Timing_OneIterMVPComm;
 extern size_t TotalIter;
-extern doublecomplex ccArr[MAX_N_SHIFTED][MAX_NMAT][3];
-extern doublecomplex (*cc)[3];
 
 // LOCAL VARIABLES
 
@@ -1336,9 +1334,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 			nInit(pArray[i]);
 			nInit(xArray[i]);
 #endif
-			ref_index=ref_indexArr[i];
-			cc=ccArr[i];
-			sigmaArray[i]=1/cc[0][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
+			sigmaArray[i]=1/shifted_cc[i][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
 			continue_flag[i]=true;
 		}
 #ifdef OCL_BLAS

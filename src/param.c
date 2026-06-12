@@ -178,6 +178,7 @@ static const char *run_name;    // first part of the dir name ('run' or 'test')
 static const char *avg_parms;   // name of file with orientation averaging parameters
 static const char *exename;     // name of executable (adda, adda.exe, adda_mpi,...)
 static int Nmat_given;          // number of refractive indices given in the command line
+static doublecomplex ref_index_input[MAX_N_SHIFTED]; // refractive indices exactly as given to '-m'
 static enum sym sym_type;       // how to treat particle symmetries
 static int sobuf;               // mode for stdout buffering
 /* The following '..._used' flags are, in principle, redundant, since the structure 'options' contains the same flags.
@@ -572,7 +573,8 @@ static struct opt_struct options[]={
 		"the domains. If '-anisotr' is specified, three refractive indices correspond to one domain (diagonal elements "
 		"of refractive index tensor in particle reference frame). Maximum number of different refractive indices is "
 		"defined at compilation time by the parameter MAX_NMAT in file const.h (by default, 15). None of the "
-		"refractive indices can be equal to 1+0i.\n"
+		"refractive indices can be equal to 1+0i. With '-iter sbicg', the values are interpreted as shifted systems "
+		"for one homogeneous isotropic particle, up to MAX_N_SHIFTED values.\n"
 		"Default: 1.5 0",UNDEF,NULL},
 	{PAR(maxiter),"<arg>","Sets the maximum number of iterations of the iterative solver, integer.\n"
 		"Default: very large, not realistic value",1,NULL},
@@ -1347,33 +1349,18 @@ PARSE_FUNC(m)
 	double mre,mim;
 
 	if (IS_ODD(Narg) || Narg==0) NargError(Narg,"even");
-	Nmat=Nmat_given=Narg/2;
-	// TODO: this need to be changed, IterMethod is not necessarily set by this point
-	if(IterMethod!=IT_SHIFTED_BICG_CS) {
-		if (Nmat>MAX_NMAT) PrintErrorHelp("Too many materials (%d), maximum %d are supported. You may increase "
-			"parameter MAX_NMAT in const.h and recompile.",Nmat,MAX_NMAT);
-		num_used_n=UNDEF;
-		ref_index=ref_indexArr[0];
-		for (i=0;i<Nmat;i++) {
-			ScanDoubleError(argv[2*i+1],&mre);
-			ScanDoubleError(argv[2*i+2],&mim);
-			ref_index[i] = mre + I*mim;
-			if (ref_index[i]==1) PrintErrorHelp("Given refractive index #%d is that of vacuum, which is not supported. "
-				"Consider using, for instance, 1.0001 instead.",i+1);
-		}
-	}
-	else {
-		if (Nmat>MAX_N_SHIFTED) PrintErrorHelp("Too many materials (%d), maximum %d are supported for Shifted BiCG-CS iterative "
-			"solver. You may increase parameter MAX_N_SHIFTED in const.h and recompile.",Nmat,MAX_N_SHIFTED);
-		num_used_n=Nmat;
-		for(i=0;i<num_used_n;i++) {
-			ref_index=ref_indexArr[i];
-			ScanDoubleError(argv[2*i+1],&mre);
-			ScanDoubleError(argv[2*i+2],&mim);
-			ref_index[0] = mre + I*mim;
-			if (ref_index[i]==1) PrintErrorHelp("Given refractive index #%d is that of vacuum, which is not supported. "
-				"Consider using, for instance, 1.0001 instead.",i+1);
-		}
+	Nmat_given=Narg/2;
+	// TODO: this needs ot be changed because this condition duplicates the one in FinalizeRefractiveIndices and is 
+	// inconsistent given that Max_N_SHIFTED is not necessarily the same as Max_m in general case. 
+	if (Nmat_given>MAX_N_SHIFTED) PrintErrorHelp("Too many refractive indices (%d), maximum %d are supported for "
+		"shifted solvers. You may increase parameter MAX_N_SHIFTED in const.h and recompile.",Nmat_given,
+		MAX_N_SHIFTED);
+	for (i=0;i<Nmat_given;i++) {
+		ScanDoubleError(argv[2*i+1],&mre);
+		ScanDoubleError(argv[2*i+2],&mim);
+		ref_index_input[i] = mre + I*mim;
+		if (ref_index_input[i]==1) PrintErrorHelp("Given refractive index #%d is that of vacuum, which is not "
+			"supported. Consider using, for instance, 1.0001 instead.",i+1);
 	}
 }
 PARSE_FUNC(maxiter)
@@ -1980,8 +1967,9 @@ void InitVariables(void)
 	vInit(beam_center_0);
 	// initialize ref_index of scatterer
 	Nmat=Nmat_given=1;
-	ref_index=ref_indexArr[0];
 	ref_index[0]=1.5;
+	ref_index_input[0]=1.5;
+	num_used_n=UNDEF;
 	// initialize to null to determine further whether it is initialized
 	logfile=NULL;
 	boxX=boxY=boxZ=UNDEF;
@@ -2121,6 +2109,31 @@ void ParseParameters(const int argc,char **argv)
 
 //======================================================================================================================
 
+static void FinalizeRefractiveIndices(void)
+// interpret refractive indices after the iterative solver is known
+{
+	int i;
+
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		if (anisotropy) PrintError("Currently '-anisotr' is not supported with '-iter sbicg'");
+		if (Nmat_given>MAX_N_SHIFTED) PrintErrorHelp("Too many refractive indices (%d), maximum %d are supported for shifted "
+			"solvers. You may increase parameter MAX_N_SHIFTED in const.h and recompile.",Nmat_given,MAX_N_SHIFTED);
+		num_used_n=Nmat_given;
+		Nmat=1;
+		Ncomp=1;
+		ref_index[0]=ref_index_input[0];
+		for (i=0;i<num_used_n;i++) shifted_ref_index[i]=ref_index_input[i];
+	}
+	else {
+		if (Nmat_given>MAX_NMAT) PrintErrorHelp("Too many materials (%d), maximum %d are supported. You may "
+			"increase parameter MAX_NMAT in const.h and recompile.",Nmat_given,MAX_NMAT);
+		Nmat=Nmat_given;
+		for (i=0;i<Nmat_given;i++) ref_index[i]=ref_index_input[i];
+	}
+}
+
+//======================================================================================================================
+
 void VariablesInterconnect(void)
 // finish parameters initialization based on their interconnections
 {
@@ -2151,6 +2164,7 @@ void VariablesInterconnect(void)
 		prop_0[0]=prop_0[1]=0;
 		prop_0[2]=1;
 	}
+	FinalizeRefractiveIndices();
 	// parameter interconnections
 	if (false) { // left for future developments - put here options which rely on symmetry
 		reduced_FFT=false;
@@ -2260,9 +2274,6 @@ void VariablesInterconnect(void)
 			"the x- and y-axes (but not z)");
 	}
 	InteractionRealArgs=(beamtype==B_DIPOLE); // other cases may be added here in the future (e.g. nearfields)
-	// temporary solution, until parsing of refractive indices is changed not to rely on knowing iterative solvers 
-	if (IterMethod==IT_SHIFTED_BICG_CS && (num_used_n==UNDEF || num_used_n!=Nmat))
-		PrintError("Currently '-iter sbicg' (if used) must be specified before '-m ...'");
 	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
 		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
 #ifdef SPARSE
@@ -2370,7 +2381,7 @@ void BuildShiftedDirectoryName(const int idx,const char *base_dir,char *out,cons
 // build output subdirectory name for the given refractive index in Shifted BiCG CS mode
 {
 	SnprintfErr(ONE_POS,out,out_size,"%s/m%.10g_%.10g",
-		base_dir,creal(ref_indexArr[idx][0]),cimag(ref_indexArr[idx][0]));
+		base_dir,creal(shifted_ref_index[idx]),cimag(shifted_ref_index[idx]));
 }
 
 //======================================================================================================================
@@ -2416,7 +2427,7 @@ void DirectoryLog(const int argc,char **argv)
 			sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,creal(ref_index[0]));
 		else
 			sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME"-"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,
-					creal(ref_indexArr[0][0]),creal(ref_indexArr[num_used_n-1][0]));
+					creal(shifted_ref_index[0]),creal(shifted_ref_index[num_used_n-1]));
 #ifdef PARALLEL
 		// add PBS, SGE or SLURM job id to the directory name if available
 		if ((ptmp=getenv("PBS_JOBID"))!=NULL || (ptmp=getenv("JOB_ID"))!=NULL || (ptmp=getenv("SLURM_JOBID"))!=NULL) {
@@ -2500,7 +2511,12 @@ void PrintInfo(void)
 			"    volume fraction: specified - "GFORMDEF", actual - "GFORMDEF"\n",gr_mat+1,gr_N,gr_d,gr_vf,gr_vf_real);
 #endif // SPARSE
 		fprintf(logfile,"box dimensions: %ix%ix%i\n",boxX,boxY,boxZ);
-		if (anisotropy) {
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
+			if (num_used_n==1) fprintf(logfile,"shifted refractive index: "CFORM"\n",REIM(shifted_ref_index[0]));
+			else fprintf(logfile,"shifted refractive indices: first "CFORM", last "CFORM" (%d total)\n",
+				REIM(shifted_ref_index[0]),REIM(shifted_ref_index[num_used_n-1]),num_used_n);
+		}
+		else if (anisotropy) {
 			fprintf(logfile,"refractive index (diagonal elements of the tensor):\n");
 			if (Nmat==1) fprintf(logfile,"    "CFORM3V"\n",REIM3V(ref_index));
 			else {

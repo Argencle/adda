@@ -67,8 +67,7 @@ double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 // used in crosssec.c
 doublecomplex * restrict E_ad; // complex field E, calculated for alldir
 double * restrict E2_alldir; // square of E (scaled with msub, so ~ Poynting vector or dC/dOmega), calculated for alldir
-doublecomplex (*cc)[3]; // a pointer to array of 3 doubles
-doublecomplex ccArr[MAX_N_SHIFTED][MAX_NMAT][3]; // couple constants
+doublecomplex cc[MAX_NMAT][3]; // couple constants
 #ifndef SPARSE
 doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ; // arrays of exponents along 3 axes (for calc_field)
 #endif
@@ -621,6 +620,20 @@ static void InitCC(const enum incpol which)
 
 //======================================================================================================================
 
+static void InitShiftedCC(const int idx,const enum incpol which)
+// calculate scalar material data for one shifted system
+{
+	int j;
+	doublecomplex m=shifted_ref_index[idx];
+
+	CoupleConstant(&m,which,shifted_cc[idx]);
+	for(j=0;j<3;j++) shifted_cc_sqrt[idx][j]=csqrt(shifted_cc[idx][j]);
+	shifted_chi_inv[idx][0]=FOUR_PI/(dipvol*(m*m-1));
+	shifted_chi_inv[idx][2]=shifted_chi_inv[idx][1]=shifted_chi_inv[idx][0];
+}
+
+//======================================================================================================================
+
 static void calculate_one_orientation(double * restrict res)
 // performs calculation for one orientation; may do orientation averaging and put the result in res
 {
@@ -638,18 +651,11 @@ static void calculate_one_orientation(double * restrict res)
 		if (!orient_avg) fprintf(logfile,"\nhere we go, calc Y\n\n");
 	}
 	if (IterMethod!=IT_SHIFTED_BICG_CS) {
-		cc=ccArr[0]; // this code may be elsewhere before
-		cc_sqrt=cc_sqrtArr[0];
-		chi_inv=chi_invArr[0];
 		InitCC(INCPOL_Y);
 	}
 	else {
 		for(int i=0;i<num_used_n;i++) {
-			cc=ccArr[i];
-			cc_sqrt=cc_sqrtArr[i];
-			chi_inv=chi_invArr[i];
-			ref_index=ref_indexArr[i];
-			InitCC(INCPOL_Y);
+			InitShiftedCC(i,INCPOL_Y);
 		}
 	}
 
@@ -668,7 +674,14 @@ static void calculate_one_orientation(double * restrict res)
 			PRINTFB("\nhere we go, calc X\n\n");
 			if (!orient_avg) fprintf(logfile,"\nhere we go, calc X\n\n");
 		}
-		if (PolRelation==POL_LDR && !avg_inc_pol) InitCC(INCPOL_X);
+		if (PolRelation==POL_LDR && !avg_inc_pol) {
+			if (IterMethod!=IT_SHIFTED_BICG_CS) {
+				InitCC(INCPOL_X);
+			}
+			else for(int i=0;i<num_used_n;i++) {
+				InitShiftedCC(i,INCPOL_X);
+			}
+		}
 		/* TO ADD NEW POLARIZABILITY FORMULATION
 		 * If new formulation depends on the incident polarization (unlikely) update the test above.
 		 */

@@ -58,12 +58,7 @@ extern const int phi_int_type;
 // defined and initialized in timing.c
 extern TIME_TYPE Timing_EPlane,Timing_EPlaneComm,Timing_IntField,Timing_IntFieldOne,Timing_ScatQuan,Timing_IncBeam;
 extern size_t TotalEFieldPlane;
-extern doublecomplex (*cc)[3]; // a pointer to array of 3 doubles
-extern doublecomplex ccArr[MAX_N_SHIFTED][MAX_NMAT][3]; // couple constants
-extern doublecomplex (*cc_sqrt)[3];
-extern doublecomplex cc_sqrtArr[MAX_N_SHIFTED][MAX_NMAT][3];
-extern doublecomplex (*chi_inv)[3];
-extern doublecomplex chi_invArr[MAX_N_SHIFTED][MAX_NMAT][3];
+extern doublecomplex cc[MAX_NMAT][3];
 
 // LOCAL VARIABLES
 
@@ -983,9 +978,12 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 			if (scat_grid) CalcScatGrid(which);
 			SaveShiftedScatFields(i,which,type);
 			// Calculate integral scattering quantities (cross sections, asymmetry parameter, electric forces)
-			cc=ccArr[i];
-			cc_sqrt=cc_sqrtArr[i];
-			chi_inv=chi_invArr[i];
+			ref_index[0]=shifted_ref_index[i];
+			for (int j=0;j<3;j++) {
+				cc[0][j]=shifted_cc[i][j];
+				cc_sqrt[0][j]=shifted_cc_sqrt[i][j];
+				chi_inv[0][j]=shifted_chi_inv[i][j];
+			}
 			if (calc_Cext || calc_Cabs || calc_Csca || calc_asym || calc_mat_force) {
 				if (orient_avg && IFROOT && which==INCPOL_X) {
 					muel_alpha[-2]=shiftedCext_store[i];
