@@ -192,6 +192,7 @@ static bool scat_plane_used;    // whether '-scat_plane ...' was used in the com
 static bool so_buf_used;        // whether '-so_buf ...' was used in the command line
 static bool beam_center_used;   // whether '-beam_center ...' was used in the command line
 static bool deprecated_bc_used; // whether '-beam ... <x> <y> <z>' was used in the command line (deprecated option)
+static bool init_field_used;    // whether '-init_field ...' was used in the command line
 
 /* TO ADD NEW COMMAND LINE OPTION
  * If you need new variables or flags to implement effect of the new command line option, define them here. If a
@@ -1234,6 +1235,7 @@ PARSE_FUNC(init_field)
 {
 	bool noExtraArgs=true;
 
+	init_field_used=true;
 	if (Narg<1 || Narg>3) NargError(Narg,"from 1 to 3");
 	if (strcmp(argv[1],"auto")==0) InitField=IF_AUTO;
 	else if (strcmp(argv[1],"inc")==0) InitField=IF_INC;
@@ -2035,6 +2037,7 @@ void InitVariables(void)
 	igt_lim=UNDEF;
 	igt_eps=UNDEF;
 	InitField=IF_AUTO;
+	init_field_used=false;
 	recalc_resid=false;
 	surface=false;
 	msubInf=false;
@@ -2274,6 +2277,9 @@ void VariablesInterconnect(void)
 			"the x- and y-axes (but not z)");
 	}
 	InteractionRealArgs=(beamtype==B_DIPOLE); // other cases may be added here in the future (e.g. nearfields)
+	if (IterMethod==IT_SHIFTED_BICG_CS && !init_field_used) InitField=IF_ZERO;
+	if (IterMethod==IT_SHIFTED_BICG_CS && InitField!=IF_ZERO)
+		PrintError("Currently '-iter sbicg' supports only '-init_field zero'");
 	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
 		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
 #ifdef SPARSE
