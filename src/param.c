@@ -2191,6 +2191,8 @@ void VariablesInterconnect(void)
 	if (igt_eps==UNDEF) igt_eps=iter_eps;
 	// default polarizability formulation depends on rect_dip
 	if (PolRelation==(enum pol)UNDEF) PolRelation = rectDip ? POL_CLDR : POL_LDR;
+	if (IterMethod==IT_SHIFTED_BICG_CS && PolRelation==POL_CLDR)
+		PrintError("Currently '-pol cldr' is not supported with '-iter sbicg'");
 	// parameter incompatibilities
 	if (scat_plane && yzplane) PrintError("Currently '-scat_plane' and '-yz' cannot be used together.");
 	if (orient_avg) {
