@@ -1264,13 +1264,12 @@ ITER_FUNC(Shifted_BiCG_CS)
 #define EPS1 1E-30
 	// all internal variables should be defined here as static, since the function will be called many times
 	static doublecomplex pn=0; // pseudo norm
-	static doublecomplex vnorm=0;
 	static doublecomplex alfa1=0;
 	static doublecomplex beta_pr=0;
 	static doublecomplex beta_cur=0;
-	static doublecomplex res=0;
 	static int i=0;
 	static double inprodRp1_max=0;
+	double vtmp_norm2 = 0;
 #ifdef OCL_BLAS
 	cl_mem bufdot;
 	cl_mem bufvcur=bufargvec;
@@ -1391,19 +1390,13 @@ ITER_FUNC(Shifted_BiCG_CS)
 #else
 		nMult_cmplx(vnext, vtmp, 1/beta_cur);
 #endif
-		// norm of vcur
+		// vtmp = beta_{k+1} * v_{k+1}
+		// Compute the squared Euclidean norm ||vtmp||^2
 #ifdef OCL_BLAS
-		double vnorm2=0;
-		/* clblasDznrm2 may fail to compile on modern OpenCL implementations, so use the same workaround as BiCG:
-		 * dotc(vcur,vcur) returns the squared norm in the real part of the complex result.
-		 */
-		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvcur,0,1,bufvcur,0,1,buftmp,1,&command_queue,0,NULL,
-			NULL));
-		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vnorm2,0,NULL,NULL));
-		vnorm=csqrt(vnorm2);
+		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vtmp_norm2,0,NULL,NULL));
 #else
-		vnorm=nNorm2(vcur,&Timing_OneIterComm);
-		vnorm=csqrt(vnorm);
+		vtmp_norm2 = nNorm2(vtmp,&Timing_OneIterComm);
 #endif
 		// CG iterates for all shifted systems
 		inprodRp1_max=0;
@@ -1411,7 +1404,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 			if(continue_flag[i]) {
 				if(niter!=1) lArray[i]=beta_pr/dArray[i];
 				dArray[i]=alfa1+sigmaArray[i]-beta_pr*lArray[i];
-				if(niter==1) uArray[i]=beta_pr-lArray[i]*uArray[i];
+				if(niter==1) uArray[i]=beta_pr;
 				else uArray[i]=-lArray[i]*uArray[i];
 				// pArray[i]=vcur-lArray[i]*pArray[i]
 #ifdef OCL_BLAS
@@ -1425,17 +1418,18 @@ ITER_FUNC(Shifted_BiCG_CS)
 				nIncrem10_cmplx(pArray[i],vcur,-lArray[i],NULL,&Timing_OneIterComm);
 #endif
 				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
-#ifdef OCL_BLAS
 				const doublecomplex xcoef=uArray[i]/dArray[i];
+#ifdef OCL_BLAS
 				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
 				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,&command_queue,
 					0,NULL,NULL));
 #else
-				nIncrem01_cmplx(xArray[i],pArray[i],uArray[i]/dArray[i],NULL,&Timing_OneIterComm);
+				nIncrem01_cmplx(xArray[i],pArray[i],xcoef,NULL,&Timing_OneIterComm);
 #endif
 				//current residual
-				res=vnorm*cabs(uArray[i]); // without normalization
-				inprodRp1Array[i]=conj(res)*res;
+				// r_k = -(u_k/d_k)*vtmp
+				inprodRp1Array[i] =
+					cAbs2(xcoef) * vtmp_norm2;
 				if(inprodRp1Array[i]<=epsB) continue_flag[i]=false;
 				if(inprodRp1Array[i]>inprodRp1_max) inprodRp1_max=inprodRp1Array[i];
 				//if(i==2) inprodRp1_max=inprodRp1Array[i];
