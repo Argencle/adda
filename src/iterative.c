@@ -250,6 +250,8 @@ static void SaveIterChpoint(void)
  */
 {
 	int i;
+	const enum matvec_mode checkpoint_mode =
+		IterMethod==IT_SHIFTED_BICG_CS ? MV_INTERACTION : MatVecMode;
 	char fname[MAX_FNAME];
 	FILE * restrict chp_file;
 	TIME_TYPE tstart;
@@ -291,6 +293,8 @@ static void SaveIterChpoint(void)
 	// write specific vectors
 	for (i=0;i<params[ind_m].vec_N;i++) if (fwrite(vectors[i].ptr,vectors[i].size,local_nRows,chp_file)!=local_nRows)
 		LogError(ALL_POS,"Failed writing to file '%s'",fname);
+	// write formulation last to preserve the layout of all previously existing checkpoint data
+	fwrite(&checkpoint_mode,sizeof(checkpoint_mode),1,chp_file);
 	// close file
 	FCloseErr(chp_file,fname,ALL_POS);
 	// write info to logfile after everyone is finished
@@ -309,6 +313,9 @@ static void LoadIterChpoint(void)
 {
 	int i;
 	int ind_m_new;
+	enum matvec_mode checkpoint_mode;
+	const enum matvec_mode expected_mode =
+		IterMethod==IT_SHIFTED_BICG_CS ? MV_INTERACTION : MatVecMode;
 	size_t local_nRows_new;
 	char fname[MAX_FNAME],ch;
 	FILE * restrict chp_file;
@@ -344,6 +351,11 @@ static void LoadIterChpoint(void)
 	// read specific vectors
 	for (i=0;i<params[ind_m].vec_N;i++) if (fread(vectors[i].ptr,vectors[i].size,local_nRows,chp_file)!=local_nRows)
 		LogError(ALL_POS,"Failed reading from file '%s'",fname);
+	// the formulation is appended after all data from the previous checkpoint layout
+	if (fread(&checkpoint_mode,sizeof(checkpoint_mode),1,chp_file)!=1)
+		LogError(ALL_POS,"File '%s' does not specify the linear-system formulation",fname);
+	if (checkpoint_mode!=expected_mode)
+		LogError(ALL_POS,"File '%s' uses a different linear-system formulation",fname);
 	// check if EOF reached and close file
 	if (fread(&ch,1,1,chp_file)!=0) LogError(ALL_POS,"File '%s' is too long",fname);
 	FCloseErr(chp_file,fname,ALL_POS);
@@ -411,10 +423,11 @@ static double ResidualNorm2(doublecomplex * restrict x,doublecomplex * restrict 
 	double res;
 
 	TIME_TYPE mc_time=0;
-	MatVec(x,buffer,NULL,false,MV_SYMMETRIZED,mvp_timing,&mc_time);
+	MatVec(x,buffer,NULL,false,MatVecMode,mvp_timing,&mc_time);
 	(*mvp_comm_timing) += mc_time;
 	(*comm_timing) += mc_time;
-	nMult_mat(r,Einc,cc_sqrt);
+	if (MatVecMode==MV_STANDARD) nCopy(r,Einc);
+	else nMult_mat(r,Einc,cc_sqrt);
 	nDecrem(r,buffer,&res,comm_timing);
 	return res;
 }
@@ -500,7 +513,7 @@ ITER_FUNC(BCGS2)
 				rho0=rho1;
 				// u_j+1 = A.u_j
 				if (niter==1 && j==0 && matvec_ready) {} // do nothing; u[1]<=>Avecbuffer already contains matvec result
-				else MatVec(u[j],u[j+1],NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				else MatVec(u[j],u[j+1],NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				sigma=nDotProd(u[j+1],pvec,&Timing_OneIterComm); // sigma = u_j+1.r~0
 				// test for zero sigma (1/alpha)
 				dtmp=cabs(sigma)/cabs(rho1); // assume that rho1 is not exactly zero
@@ -512,7 +525,7 @@ ITER_FUNC(BCGS2)
 				// r_i = r_i - alpha*u_i+1
 				temp1=-alpha;
 				for (i=0;i<=j;i++) nIncrem01_cmplx(r[i],u[i+1],temp1,NULL,NULL);
-				MatVec(r[j],r[j+1],NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(r[j],r[j+1],NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			}
 			// --- The convex polynomial part ---
 			// Z = R'R
@@ -673,7 +686,7 @@ ITER_FUNC(BiCG_CS)
 			}
 			// q_k=Avecbuffer=A.p_k
 			if (niter==1 && matvec_ready) {} // do nothing, Avecbuffer is ready to use
-			else MatVec_wrapper(pvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec_wrapper(pvec,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// mu_k=p_k.q_k; check for mu_k!=0
 #ifdef OCL_BLAS
 			CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufmu,0,bufpvec,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,NULL,
@@ -792,7 +805,7 @@ ITER_FUNC(BiCGStab)
 			}
 			// calculate v_k=A.p_k
 			if (niter==1 && matvec_ready) nCopy(v,Avecbuffer);
-			else MatVec(pvec,v,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(pvec,v,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// alpha_k=ro_new/(v_k.r~)
 			temp1=nDotProd(v,rtilda,&Timing_OneIterComm);
 			dtmp=cabs(temp1)/cabs(ro_new); // assume that ro_new is not exactly zero
@@ -810,7 +823,7 @@ ITER_FUNC(BiCGStab)
 			}
 			else {
 				// t=Avecbuffer=A.s
-				MatVec(s,Avecbuffer,&denumOmega,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(s,Avecbuffer,&denumOmega,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				// omega_k=s.t/|t|^2
 				omega=nDotProd(s,Avecbuffer,&Timing_OneIterComm)/denumOmega;
 				// x_k=x_k-1+alpha_k*p_k+omega_k*s
@@ -848,10 +861,10 @@ ITER_FUNC(CGNR)
 		case PHASE_ITER:
 			// p_1=Ah.r_0 and ro_new=ro_0=|Ah.r_0|^2
 			// since first product is with Ah , matvec_ready can't be employed
-			if (niter==1) MatVec(rvec,pvec,&ro_new,true,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			if (niter==1) MatVec(rvec,pvec,&ro_new,true,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			else {
 				// Avecbuffer=AH.r_k-1, ro_new=ro_k-1=|AH.r_k-1|^2
-				MatVec(rvec,Avecbuffer,&ro_new,true,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(rvec,Avecbuffer,&ro_new,true,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				// beta_k-1=ro_k-1/ro_k-2
 				beta=ro_new/ro_old;
 				// p_k=beta_k-1*p_k-1+AH.r_k-1
@@ -859,7 +872,7 @@ ITER_FUNC(CGNR)
 			}
 			// alpha_k=ro_k-1/|A.p_k|^2
 			// Avecbuffer=A.p_k
-			MatVec(pvec,Avecbuffer,&denumeratorAlpha,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			MatVec(pvec,Avecbuffer,&denumeratorAlpha,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			alpha=ro_new/denumeratorAlpha;
 			// x_k=x_k-1+alpha_k*p_k
 			nIncrem01(xvec,pvec,alpha,NULL,NULL);
@@ -930,7 +943,7 @@ ITER_FUNC(CSYM)
 			/* Avecbuffer = A.q_k. Since q_1 is r_0(*), mat-vec product for niter==1 is equivalent to Ah.r_0 (as in
 			 * CGNR). Thus, matvec_ready can't be employed.
 			 */
-			MatVec(q_new,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			MatVec(q_new,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// alpha_k = q_k(T).A.q_k
 			alpha=nDotProd_conj(q_new,Avecbuffer,&Timing_OneIterComm);
 			// eta_k = c_k-2*c_k-1*beta_k + s_k-1(*)*alpha_k
@@ -1076,7 +1089,7 @@ ITER_FUNC(QMR_CS)
 				temp1=1/beta;
 				nMultSelf_cmplx(Avecbuffer,temp1);
 			}
-			else MatVec(v,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(v,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			alpha=nDotProd_conj(v,Avecbuffer,&Timing_OneIterComm);
 			// v~_k+1=-beta_k*v_k-1-alpha_k*v_k+A.v_k
 			temp2=-alpha;
@@ -1215,7 +1228,7 @@ ITER_FUNC(QMR_CS_2)
 			if (niter==1 && matvec_ready) { // uses that p_1=v_1=r_0/ro_1
 				nMultSelf(Avecbuffer,1/ro_old);
 			}
-			else MatVec(pvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(pvec,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// eps_k = p_k(*).(A.p_k); beta_k = eps_k/delta_k
 			eps=nDotProd_conj(pvec,Avecbuffer,&Timing_OneIterComm);
 			beta=eps/delta;
@@ -1354,10 +1367,8 @@ ITER_FUNC(Shifted_BiCG_CS)
 		// A.v
 #ifdef OCL_BLAS
 		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
-		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_STANDARD,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
-#else
-		MatVec(vcur,Avecbuffer,NULL,false,MV_STANDARD,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 #endif
+		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_INTERACTION,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 		// alfa1
 #ifdef OCL_BLAS
 		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvcur,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,
@@ -1657,13 +1668,16 @@ static void InitFieldfromE(void)
  * assumes that xvec contains initial electric field, it is then replaced by x_0
  */
 {
-	// calculate x = (1/cc_sqrt)*V*chi*E (both x and E are stored in xvec)
+	// Convert the electric field to the unknown of the selected linear-system formulation.
 	doublecomplex mult[MAX_NMAT][3];
 	int i,j;
-	for (i=0;i<Nmat;i++) for (j=0;j<3;j++) mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]);
+	for (i=0;i<Nmat;i++) for (j=0;j<3;j++) {
+		if (MatVecMode==MV_STANDARD) mult[i][j]=1/chi_inv[i][j]; // P=V.chi.E
+		else mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]); // x=C^(-1/2).P
+	}
 	nMultSelf_mat(xvec,mult);
 	// calculate A.x_0, r_0=b-A.x_0, and |r_0|^2
-	MatVec(xvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_MVP,&Timing_MVPComm);
+	MatVec(xvec,Avecbuffer,NULL,false,MatVecMode,&Timing_MVP,&Timing_MVPComm);
 	nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 }
 
@@ -1682,7 +1696,7 @@ static const char *CalcInitField(double zero_resid,const enum incpol which)
 			 * cases. Moreover, this option will probably be changed afterwards.
 			 */
 			// calculate A.(x_0=b), r_0=b-A.(x_0=b) and |r_0|^2
-			MatVec(pvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_MVP,&Timing_MVPComm);
+			MatVec(pvec,Avecbuffer,NULL,false,MatVecMode,&Timing_MVP,&Timing_MVPComm);
 			nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 			// check which x_0 is better
 			if (zero_resid<inprodR) { // use x_0=0
@@ -1702,10 +1716,8 @@ static const char *CalcInitField(double zero_resid,const enum incpol which)
 			inprodR=zero_resid;
 			return "x_0 = 0";
 		case IF_INC:
-			nCopy(xvec,pvec); // x_0=b, i.e. E_exc=E_inc
-			// calculate A.(x_0=b), r_0=b-A.(x_0=b) and |r_0|^2
-			MatVec(xvec,Avecbuffer,NULL,false,MV_SYMMETRIZED,&Timing_MVP,&Timing_MVPComm);
-			nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
+			nCopy(xvec,Einc);
+			InitFieldfromE(); // initialize from E=E_inc
 			return "x_0 = E_inc";
 		case IF_WKB:
 			CalcFieldWKB(xvec); // calculate WKB electric field
@@ -1737,19 +1749,18 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	// redundant initialization to remove warnings
 	time_tmp=time_tmp2=time_tmp3=0;
 
-	/* Instead of solving system (I+D.C).x=b , C - diagonal matrix with couple constants
-	 *                                         D - symmetric interaction matrix of Green's tensor
-	 * we solve system (I+S.D.S).(S.x)=(S.b), S=sqrt(C), then total interaction matrix is symmetric and
-	 * Jacobi-preconditioned for any distribution of refractive index.
+	/* The standard formulation solves (D+C^(-1)).P=Einc. The symmetrized formulation solves
+	 * (I+S.D.S).x=S.Einc, where S=sqrt(C) and x=S^(-1).P. Both matrices are complex symmetric for the currently
+	 * supported diagonal C; the latter is also Jacobi-preconditioned.
 	 */
-	/* p=b=(S.Einc) is right part of the linear system; used only here. In iteration methods themselves p is completely
-	 * different vector. To avoid confusion this is done before any other initializations, specific to iterative solvers
+	/* p is the right-hand side of the linear system; used only here. In iteration methods themselves p is a completely
+	 * different vector. To avoid confusion this is done before any other initializations specific to iterative solvers.
 	 */
 	Timing_InitIterComm=Timing_MVP=Timing_MVPComm=0;
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
 	if (!load_chpoint) {
-		if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,Einc);
+		if (IterMethod==IT_SHIFTED_BICG_CS || MatVecMode==MV_STANDARD) nCopy(pvec,Einc);
 		else nMult_mat(pvec,Einc,cc_sqrt);
 		temp=nNorm2(pvec,&Timing_InitIterComm); // |r_0|^2 when x_0=0
 		resid_scale=1/temp;
@@ -1940,6 +1951,7 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	for(size_t i=0;i<local_nRows;i++) fprintf(fp2,"%.30f + %.30f*I,\n", creal(xvec[i]), cimag(xvec[i]));
 	fclose(fp2);*/
 	if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,xArray[0]);
+	else if (MatVecMode==MV_STANDARD) nCopy(pvec,xvec);
 	else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
 	return (niter-1); // the number of iterations elapsed

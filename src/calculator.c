@@ -67,7 +67,6 @@ double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 // used in crosssec.c
 doublecomplex * restrict E_ad; // complex field E, calculated for alldir
 double * restrict E2_alldir; // square of E (scaled with msub, so ~ Poynting vector or dC/dOmega), calculated for alldir
-doublecomplex cc[MAX_NMAT][3]; // couple constants
 #ifndef SPARSE
 doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ; // arrays of exponents along 3 axes (for calc_field)
 #endif
@@ -614,6 +613,7 @@ static void InitCC(const enum incpol which)
 	/* this is done here, since InitCC can be run between different runs of the iterative solver; write is blocking to
 	 * ensure completion before function end
 	 */
+	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc,CL_TRUE,0,(size_t)Nmat * sizeof(*cc),cc,0,NULL,NULL));
 	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc_sqrt,CL_TRUE,0,(size_t)Nmat * sizeof(*cc_sqrt),cc_sqrt,0,NULL,NULL));
 #endif
 }

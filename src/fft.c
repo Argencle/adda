@@ -1092,6 +1092,7 @@ void InitDmatrix(void)
 	/* The following are constant device buffers which are initialized with host data. They are all created here (to be
 	 * compatible with prognosis), but some are initialized (filled with data) later.
 	 */
+	CREATE_CL_BUFFER(bufcc,CL_MEM_READ_ONLY,(size_t)Nmat * sizeof(*cc),NULL);
 	CREATE_CL_BUFFER(bufcc_sqrt,CL_MEM_READ_ONLY,(size_t)Nmat * sizeof(*cc_sqrt),NULL);
 	CREATE_CL_BUFFER(bufDmatrix,CL_MEM_READ_ONLY,Dsize*sizeof(*Dmatrix),NULL);
 	if (surface) CREATE_CL_BUFFER(bufRmatrix,CL_MEM_READ_ONLY,Rsize*sizeof(*Rmatrix),NULL);
@@ -1220,6 +1221,16 @@ void InitDmatrix(void)
 		CL_CH_ERR(clSetKernelArg(clarith5_raw,3,sizeof(size_t),&smallY));
 		CL_CH_ERR(clSetKernelArg(clarith5_raw,4,sizeof(size_t),&gridX));
 		CL_CH_ERR(clSetKernelArg(clarith5_raw,5,sizeof(cl_mem),&bufresultvec));
+		// for arith5_standard
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,0,sizeof(cl_mem),&bufmaterial));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,1,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,2,sizeof(cl_mem),&bufcc));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,3,sizeof(cl_mem),&bufargvec));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,4,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,5,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,6,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,7,sizeof(size_t),&gridX));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,8,sizeof(cl_mem),&bufresultvec));
 		// transpose kernels, first for transpose forward
 		CL_CH_ERR(clSetKernelArg(cltransposeof,0,sizeof(cl_mem),&bufslices));
 		CL_CH_ERR(clSetKernelArg(cltransposeof,1,sizeof(cl_mem),&bufslices_tr));
@@ -1514,6 +1525,7 @@ void Free_FFT_Dmat(void)
 	my_clReleaseBuffer(bufXmatrix);
 	my_clReleaseBuffer(bufmaterial);
 	my_clReleaseBuffer(bufposition);
+	my_clReleaseBuffer(bufcc);
 	my_clReleaseBuffer(bufcc_sqrt);
 	my_clReleaseBuffer(bufargvec);
 	my_clReleaseBuffer(bufresultvec);

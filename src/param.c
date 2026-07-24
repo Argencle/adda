@@ -146,6 +146,7 @@ enum init_field InitField; // how to calculate initial field for the iterative s
 const char *infi_fnameY;   // names of files, defining the initial field (for two polarizations)
 const char *infi_fnameX;
 bool recalc_resid;         // whether to recalculate residual at the end of iterative solver
+static bool form_used;     // whether the linear-system formulation was explicitly specified
 enum chpoint chp_type;     // type of checkpoint (to save)
 time_t chp_time;           // time of checkpoint (in sec)
 char const *chp_dir;       // directory name to save/load checkpoint
@@ -383,6 +384,7 @@ PARSE_FUNC(dir);
 PARSE_FUNC(dpl);
 PARSE_FUNC(eps);
 PARSE_FUNC(eq_rad);
+PARSE_FUNC(form);
 #ifdef OPENCL
 PARSE_FUNC(gpu);
 #endif
@@ -480,6 +482,10 @@ static struct opt_struct options[]={
 		"defined by some shapes themselves, then this option can be used to override the internal specification and "
 		"scale the shape.\n"
 		"Default: determined by the value of '-size' or by '-grid', '-dpl', '-lambda', and '-rect_dip'.",1,NULL},
+	{PAR(form),"{standard|symmetrized}","Sets the formulation of the linear system. The standard formulation solves "
+		"(D+C^(-1))P=E_inc; the symmetrized formulation solves "
+		"(I+sqrt(C)Dsqrt(C))x=sqrt(C)E_inc.\n"
+		"The 'sbicg' solver supports only the standard (shifted) formulation.\nDefault: symmetrized",1,NULL},
 #ifdef OPENCL
 	{PAR(gpu),"<index>","Specifies index of GPU that should be used (starting from 0). Relevant only for OpenCL "
 		"version of ADDA, running on a system with several GPUs.\n"
@@ -1133,6 +1139,13 @@ PARSE_FUNC(eq_rad)
 {
 	ScanDoubleError(argv[1],&a_eq);
 	TestPositive(a_eq,"equivalent radius");
+}
+PARSE_FUNC(form)
+{
+	form_used=true;
+	if (strcmp(argv[1],"standard")==0) MatVecMode=MV_STANDARD;
+	else if (strcmp(argv[1],"symmetrized")==0 || strcmp(argv[1],"symm")==0) MatVecMode=MV_SYMMETRIZED;
+	else NotSupported("Linear-system formulation",argv[1]);
 }
 #ifdef OPENCL
 PARSE_FUNC(gpu)
@@ -1990,6 +2003,8 @@ void InitVariables(void)
 	ScatRelation=SQ_DRAINE;
 	IntRelation=G_POINT_DIP;
 	IterMethod=IT_QMR_CS;
+	MatVecMode=MV_SYMMETRIZED;
+	form_used=false;
 	sym_type=SYM_AUTO;
 	prognosis=false;
 	maxiter=UNDEF;
@@ -2284,6 +2299,8 @@ void VariablesInterconnect(void)
 		PrintError("Currently '-iter sbicg' supports only '-init_field zero'");
 	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
 		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
+	if (IterMethod==IT_SHIFTED_BICG_CS && form_used && MatVecMode!=MV_STANDARD)
+		PrintError("'-iter sbicg' supports only '-form standard'");
 #ifdef SPARSE
 	if (shape==SH_SPHERE) PrintError("Sparse mode requires shape to be read from file (-shape read ...)");
 #endif
@@ -2702,6 +2719,12 @@ void PrintInfo(void)
 			case IT_QMR_CS_2: fprintf(logfile,"2-term QMR (complex symmetric)\n"); break;
 			case IT_SHIFTED_BICG_CS: fprintf(logfile,"Shifted BiCG (complex symmetric)\n"); break;
 		}
+		if (IterMethod==IT_SHIFTED_BICG_CS)
+			fprintf(logfile,"Linear-system formulation: shifted standard\n");
+		else if (MatVecMode==MV_STANDARD)
+			fprintf(logfile,"Linear-system formulation: standard\n");
+		else
+			fprintf(logfile,"Linear-system formulation: symmetrized\n");
 		/* TO ADD NEW ITERATIVE SOLVER
 		 * add a case above in the alphabetical order, analogous to the ones already present. The variable parts of the
 		 * case are descriptor, defined in const.h, and its plain-text description (to be shown in log).

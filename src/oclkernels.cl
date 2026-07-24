@@ -429,6 +429,28 @@ __kernel void arith5_raw(__global const ushort *position,__global const double2 
 
 //======================================================================================================================
 
+__kernel void arith5_standard(__global const uchar *material,__global const ushort *position,
+	__constant double2 *cc,__global const double2 *argvec,__global const double2 *Xmatrix,
+	const in_sizet local_Nsmall,const in_sizet smallY,const in_sizet gridX,__global double2 *resultvec)
+{
+	const size_t id=get_global_id(0);
+	const size_t j=3*id;
+	const uchar mat=material[id];
+	const size_t index=((position[j+2]*smallY+position[j+1])*gridX+position[j]);
+	int xcomp;
+
+	for (xcomp=0;xcomp<3;xcomp++) {
+		const double2 divisor=cc[mat*3+xcomp];
+		const double denominator=divisor.s0*divisor.s0+divisor.s1*divisor.s1;
+		double2 quotient;
+		quotient.s0=(argvec[j+xcomp].s0*divisor.s0+argvec[j+xcomp].s1*divisor.s1)/denominator;
+		quotient.s1=(argvec[j+xcomp].s1*divisor.s0-argvec[j+xcomp].s0*divisor.s1)/denominator;
+		resultvec[j+xcomp]=Xmatrix[index+xcomp*local_Nsmall]+quotient;
+	}
+}
+
+//======================================================================================================================
+
 __kernel void inpr(__global double *inprod, __global const double2 *resultvec)
 {
 	const size_t id = get_global_id(0);

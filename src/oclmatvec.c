@@ -50,14 +50,15 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 /* This function implements matrix-vector product. If we want to calculate the inner product as well, we pass 'inprod'
  * as a non-NULL pointer. if 'inprod' is NULL, we don't calculate it. 'argvec' always remains unchanged afterwards,
  * however it is not strictly const - some manipulations may occur during the execution. comm_timing can be NULL, then
- * it is ignored. In MV_STANDARD mode it computes only the convolution D.x, which is used by Shifted_BiCG_CS.
+ * it is ignored.
  */
 {
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
-	const cl_kernel arith1_kernel = (mode==MV_STANDARD) ? clarith1_raw : clarith1;
-	const cl_kernel arith5_kernel = (mode==MV_STANDARD) ? clarith5_raw : clarith5;
+	const cl_kernel arith1_kernel = (mode==MV_SYMMETRIZED) ? clarith1 : clarith1_raw;
+	const cl_kernel arith5_kernel = mode==MV_SYMMETRIZED ? clarith5 :
+		(mode==MV_STANDARD ? clarith5_standard : clarith5_raw);
 
 	/* MV_SYMMETRIZED:
 	 * A = I + S.D.S
@@ -65,10 +66,13 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 * A.x = x + S.D.(S.x)
 	 * A(H).x = x + (S(T).D(T).S(T).x(*))(*)
 	 *
-	 * MV_STANDARD:
+	 * MV_INTERACTION:
 	 * A = D
 	 * A.x = D.x
 	 * A(H).x = (D(T).x(*))(*)
+	 *
+	 * MV_STANDARD:
+	 * A = D + C^(-1)
 	 *
 	 * C,S - diagonal => symmetric
 	 * (!! will change if tensor (non-diagonal) polarizability is used !!)

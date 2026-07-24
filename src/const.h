@@ -108,7 +108,7 @@ the compilation may fail or produce wrong results. If you still want to try, ena
 
 // sizes of some arrays
 // TODO: the following two need to be combined into one parameter
-#define MAX_N_SHIFTED    300  // maximum number of different refractive indices in shifted solver
+#define MAX_N_SHIFTED    1000  // maximum number of different refractive indices in shifted solver
 #define MAX_NMAT         15   // maximum number of different refractive indices (<256)
 #define MAX_N_SH_PARMS   25   // maximum number of shape parameters
 #define MAX_N_BEAM_PARMS 10   // maximum number of beam parameters
@@ -269,8 +269,9 @@ enum iter { // iterative methods
 };
 
 enum matvec_mode { // matrix-vector product mode
-	MV_STANDARD,   // raw interaction operator: D.x
-	MV_SYMMETRIZED // symmetrized system operator: x + S.D.S.x
+	MV_INTERACTION, // raw interaction operator: D.x
+	MV_STANDARD,    // standard system operator: D.x + C^(-1).x
+	MV_SYMMETRIZED  // symmetrized system operator: x + S.D.S.x
 };
 
 enum Eftype { // type of E field calculation

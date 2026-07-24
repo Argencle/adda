@@ -82,6 +82,7 @@ int term_width;                  // width of the terminal to which ADDA produces
 int Nmat;  // number of different domains (for each either scalar or tensor refractive index is specified
 int Ncomp; // number of components of each refractive index (1 or 3)
 doublecomplex ref_index[MAX_NMAT];  // a set of refractive indexes
+doublecomplex cc[MAX_NMAT][3];      // couple constants (dipole polarizabilities)
 doublecomplex cc_sqrt[MAX_NMAT][3]; // sqrt of couple constants
 doublecomplex chi_inv[MAX_NMAT][3]; // normalized inverse susceptibility: = 1/(V*chi)
 doublecomplex shifted_ref_index[MAX_N_SHIFTED]; // refractive indices for shifted systems
@@ -92,9 +93,10 @@ unsigned char * restrict material;  // material: index for cc
 
 // iterative solver
 enum iter IterMethod; // iterative method to use
+enum matvec_mode MatVecMode; // linear-system formulation for non-shifted iterative solvers
 int maxiter;          // maximum number of iterations
 	// the following two can't be declared restrict due to SwapPointers
-doublecomplex *xvec;  // total electric field on the dipoles
+doublecomplex *xvec;  // current linear-system unknown (P in standard mode, C^(-1/2).P in symmetrized mode)
 doublecomplex *pvec;  // polarization of dipoles, also an auxiliary vector in iterative solvers
 doublecomplex * restrict Einc;    // incident field on dipoles
 
@@ -175,4 +177,3 @@ int *position; // no reason to restrict this to short in sparse mode; actually i
 int * restrict position_full;
 
 #endif // !SPARSE
-

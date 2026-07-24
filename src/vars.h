@@ -57,6 +57,7 @@ extern int term_width;
 // refractive index
 extern int Nmat,Ncomp;
 extern doublecomplex ref_index[MAX_NMAT];
+extern doublecomplex cc[MAX_NMAT][3];
 extern doublecomplex cc_sqrt[MAX_NMAT][3];
 extern doublecomplex chi_inv[MAX_NMAT][3];
 extern doublecomplex shifted_ref_index[MAX_N_SHIFTED];
@@ -67,6 +68,7 @@ extern unsigned char * restrict material;
 
 // iterative solver
 extern enum iter IterMethod;
+extern enum matvec_mode MatVecMode;
 extern int maxiter;
 extern doublecomplex *xvec,*pvec,* restrict Einc;
 
