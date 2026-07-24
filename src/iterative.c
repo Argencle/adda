@@ -41,7 +41,10 @@
 #endif
 
 // SEMI-GLOBAL VARIABLES
-
+#ifdef DEBUG
+	static int shifted_convergence_iter[MAX_N_SHIFTED];
+	static double shifted_convergence_resid[MAX_N_SHIFTED];
+#endif
 // defined and initialized in calculator.c
 extern doublecomplex *rvec; // can't be declared restrict due to SwapPointers
 extern doublecomplex *vcur, *vpr, *vtmp, *vnext;
@@ -1335,6 +1338,11 @@ ITER_FUNC(Shifted_BiCG_CS)
 #endif
 			sigmaArray[i]=1/shifted_cc[i][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
 			continue_flag[i]=true;
+
+#ifdef DEBUG
+			shifted_convergence_iter[i]=-1;
+			shifted_convergence_resid[i]=0;
+#endif
 		}
 #ifdef OCL_BLAS
 		CL_CH_ERR(clFinish(command_queue));
@@ -1430,7 +1438,15 @@ ITER_FUNC(Shifted_BiCG_CS)
 				// r_k = -(u_k/d_k)*vtmp
 				inprodRp1Array[i] =
 					cAbs2(xcoef) * vtmp_norm2;
-				if(inprodRp1Array[i]<=epsB) continue_flag[i]=false;
+#ifdef DEBUG
+				shifted_convergence_resid[i]=sqrt(resid_scale*inprodRp1Array[i]);
+#endif
+				if(inprodRp1Array[i]<=epsB) {
+#ifdef DEBUG
+					if (shifted_convergence_iter[i]<0) shifted_convergence_iter[i]=niter;
+#endif
+					continue_flag[i]=false;
+				}
 				if(inprodRp1Array[i]>inprodRp1_max) inprodRp1_max=inprodRp1Array[i];
 				//if(i==2) inprodRp1_max=inprodRp1Array[i];
 				//TODO: If the algorithm converged (i-case), then we no longer calculate.
@@ -1811,6 +1827,73 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		 */
 		ProgressReport();
 	}
+#ifdef DEBUG
+	if (method_in==IT_SHIFTED_BICG_CS && IFROOT) {
+		char fname[MAX_FNAME];
+		FILE *fp;
+		long file_size;
+		const char *polarization;
+
+		if (which==INCPOL_Y)
+			polarization="Y";
+		else if (which==INCPOL_X)
+			polarization="X";
+		else
+			polarization="unknown";
+
+		SnprintfErr(ONE_POS,fname,MAX_FNAME,"%s/shifted_convergence.dat",directory);
+		fp=FOpenErr(fname,"a+",ONE_POS);
+
+		if (fseek(fp,0,SEEK_END)!=0) {
+			FCloseErr(fp,fname,ONE_POS);
+			LogError(ONE_POS,"Failed to seek in '%s'",fname);
+		}
+
+		file_size=ftell(fp);
+
+		if (file_size<0) {
+			FCloseErr(fp,fname,ONE_POS);
+			LogError(ONE_POS,"Failed to determine size of '%s'",fname);
+		}
+
+		if (file_size==0) {
+			fprintf(
+				fp,
+				"# Shifted BiCG-CS convergence information\n"
+				"#\n"
+				"# Columns:\n"
+				"# 1: incident polarization\n"
+				"# 2: shifted-system index\n"
+				"# 3: real part of refractive index\n"
+				"# 4: imaginary part of refractive index\n"
+				"# 5: convergence iteration (-1 if not converged)\n"
+				"# 6: final relative residual norm\n"
+				"#\n"
+				"# pol  index  Re(m)  Im(m)  iterations"
+				"  relative_residual\n"
+			);
+		}
+
+		fprintf(fp,"\n# Polarization %s\n",polarization);
+
+		for (int shifted_i=0;
+			shifted_i<num_used_n;
+			shifted_i++) {
+			fprintf(
+				fp,
+				"%s  %d  %.17e  %.17e  %d  %.17e\n",
+				polarization,
+				shifted_i,
+				creal(shifted_ref_index[shifted_i]),
+				cimag(shifted_ref_index[shifted_i]),
+				shifted_convergence_iter[shifted_i],
+				shifted_convergence_resid[shifted_i]
+			);
+		}
+
+		FCloseErr(fp,fname,ONE_POS);
+	}
+#endif
 	// Save checkpoint of type always
 	if (chp_type==CHP_ALWAYS && !chp_exit) SaveIterChpoint();
 	/* process incomplete convergence
