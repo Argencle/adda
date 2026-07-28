@@ -199,6 +199,11 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	if (bufupload) CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufresultvec,CL_TRUE,0,local_nRows*sizeof(doublecomplex),
 		resultvec,0,NULL,NULL));
 	if (ipr) MyInnerProduct(inprod,double_type,1,comm_timing);
+	/* While OCL_BLAS keeps the vectors on the device, bufuload is false. Waiting here makes the MatVec timer meaningful.
+	 * This normally only moves forward a synchronization that would happen shortly afterwards at a blocking scalar
+	 * readback in the solvers.
+	 */
+	if (!bufupload) CL_CH_ERR(clFinish(command_queue));
 #ifdef PRECISE_TIMING
 	GET_SYSTEM_TIME(tvp+1);
 

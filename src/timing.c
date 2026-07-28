@@ -23,7 +23,7 @@
 #include <time.h>
 #include <stdio.h>
 
-#ifdef ADDA_MPI
+#if defined(ADDA_MPI) || defined(OPENCL)
 #	define TO_SEC(p) (p)
 #else
 #	define TO_SEC(p) ((p) / (double) CLOCKS_PER_SEC)
@@ -93,6 +93,30 @@ double DiffSystemTime(const SYSTEM_TIME * restrict t1,const SYSTEM_TIME * restri
 
 //======================================================================================================================
 
+#if defined(OPENCL) && !defined(ADDA_MPI)
+double GetOpenCLWallTime(void)
+// return a wall-clock time in seconds, using the same platform-specific timers as the total wall-time measurement
+{
+#ifdef WINDOWS
+	static LARGE_INTEGER freq;
+	LARGE_INTEGER now;
+
+	if (freq.QuadPart==0) QueryPerformanceFrequency(&freq);
+	QueryPerformanceCounter(&now);
+	return (double)now.QuadPart/(double)freq.QuadPart;
+#elif defined(POSIX)
+	struct timeval now;
+
+	gettimeofday(&now,NULL);
+	return (double)now.tv_sec+MICRO*(double)now.tv_usec;
+#else
+	return (double)time(NULL);
+#endif
+}
+#endif
+
+//======================================================================================================================
+
 void StartTime(void)
 // start global time
 {
@@ -151,6 +175,10 @@ void FinalStatistics(void)
 		fprintf(logfile,
 			"--Everything below is also wall times--\n"
 			"Time since MPI_Init: "FFORMT"\n",TO_SEC(Timing_TotalTime));
+#elif defined(OPENCL)
+		fprintf(logfile,
+			"--Everything below is also wall times--\n"
+			"Time measured with a wall clock: "FFORMT"\n",TO_SEC(Timing_TotalTime));
 #else // standard clock
 		fprintf(logfile,
 			"--Everything below is processor times--\n");
