@@ -22,6 +22,10 @@
 #ifdef ADDA_MPI
 #	define TIME_TYPE double
 #	define GET_TIME() MPI_Wtime()
+#elif defined(OPENCL)
+#	define TIME_TYPE double
+#	define GET_TIME() GetOpenCLWallTime()
+double GetOpenCLWallTime(void);
 #else
 #	include <time.h>
 #	define TIME_TYPE clock_t
