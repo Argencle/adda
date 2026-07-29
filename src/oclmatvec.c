@@ -33,8 +33,6 @@
 #include "oclcore.h"
 #include "prec_time.h"
 #include "vars.h"
-// system headers
-#include <stdlib.h>
 
 // SEMI-GLOBAL VARIABLES
 
@@ -43,11 +41,24 @@ extern const size_t RsizeY,clxslices,local_gridX,slicesize;
 // defined and initialized in timing.c
 extern size_t TotalMatVec;
 
-// EXTERNAL FUNCTIONS
-
 #ifdef PRECISE_TIMING
-// calculator.c
-void FreeEverything(void); // for proper finalization
+static struct {
+	bool ready;
+	SYSTEM_TIME start,end;
+} precise_matvec_timing;
+
+void PrintPreciseMatVecTiming(void)
+// print the timing captured during the first OpenCL matrix-vector product
+{
+	if (!precise_matvec_timing.ready || !IFROOT) return;
+	PrintBoth(logfile,
+		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+		"          First MatVec timing              \n"
+		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+		"Total = "FFORMPT"\n\n"
+		"Precise timing does not provide an internal MatVec breakdown in OpenCL mode.\n\n",
+		DiffSystemTime(&precise_matvec_timing.start,&precise_matvec_timing.end));
+}
 #endif
 
 //======================================================================================================================
@@ -67,6 +78,9 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
+#ifdef PRECISE_TIMING
+	const bool profile_this_matvec=(TotalMatVec==0);
+#endif
 
 	/* A = I + S.D.S
 	 * S = sqrt(C)
@@ -99,7 +113,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	if (ipr && !ipr_required) LogError(ONE_POS,"Incompatibility error in MatVec");
 #ifdef PRECISE_TIMING
 	SYSTEM_TIME tvp[2];
-	GET_SYSTEM_TIME(tvp);
+	if (profile_this_matvec) GET_SYSTEM_TIME(tvp);
 #endif
 	// FFT_matvec code
 	if (ipr) *inprod = 0.0;
@@ -205,20 +219,12 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 */
 	if (!bufupload) CL_CH_ERR(clFinish(command_queue));
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+1);
-
-	if (IFROOT) {
-		PrintBoth(logfile,
-			"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-			"                MatVec timing              \n"
-			"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-			"Total = "FFORMPT"\n\n"
-			"Precise timing is not working for MatVec in OpenCL mode. Only the total time is provided.\n",
-			DiffSystemTime(tvp,tvp+1));
-		PRINTFB("\nPrecise timing is complete. Finishing execution.\n");
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+1);
+		precise_matvec_timing.start=tvp[0];
+		precise_matvec_timing.end=tvp[1];
+		precise_matvec_timing.ready=true;
 	}
-	FreeEverything();
-	Stop(EXIT_SUCCESS);
 #endif
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;

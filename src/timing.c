@@ -17,6 +17,7 @@
 // project headers
 #include "comm.h"
 #include "io.h"
+#include "prec_time.h"
 #include "vars.h"
 // system headers
 #include <math.h>
@@ -155,6 +156,10 @@ void FinalStatistics(void)
 		// last time measurements
 		Timing_TotalTime = GET_TIME() - tstart_main;
 		GET_SYSTEM_TIME(&wt_end);
+#ifdef PRECISE_TIMING
+		// print after capturing total times, so report I/O is excluded from all normal timing results
+		PrintPreciseMatVecTiming();
+#endif
 		// log statistics
 		fprintf(logfile,
 			"\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"

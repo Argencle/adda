@@ -106,7 +106,7 @@ VALID_OPTS := DEBUG DEBUGFULL FFT_TEMPERTON PRECISE_TIMING NOT_USE_LOCK ONLY_LOC
 # Temperton FFT (fft.h).
 #override OPTIONS += FFT_TEMPERTON
 
-# Precise timing (prec_timing.h).
+# Precise timing of initialization and the first MatVec (prec_timing.h).
 #override OPTIONS += PRECISE_TIMING
 
 # Controls the mode of file locking, if any (io.h). Use at maximum one of the following options.
@@ -286,7 +286,7 @@ else
   endif
 endif
 ifneq ($(filter PRECISE_TIMING,$(OPTIONS)),)
-  $(info Precise timing)
+  $(info Precise timing of initialization and the first MatVec)
   CDEFS += -DPRECISE_TIMING
   CSOURCE += prec_time.c
 endif
