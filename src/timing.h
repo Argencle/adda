@@ -18,6 +18,9 @@
 // project headers
 #include "os.h"
 #include "parbas.h"
+#ifdef SOLVER_LINALG_PROFILE
+#	include <stddef.h>
+#endif
 
 #ifdef ADDA_MPI
 #	define TIME_TYPE double
@@ -56,5 +59,53 @@ void StartTime(void);
 void InitTiming(void);
 void FinalStatistics(void);
 double DiffSystemTime(const SYSTEM_TIME * restrict t1,const SYSTEM_TIME * restrict t2);
+
+#ifdef SOLVER_LINALG_PROFILE
+enum solver_linalg_profile_function {
+	PROF_LA_NINIT,
+	PROF_LA_NCOPY,
+	PROF_LA_NNORM2,
+	PROF_LA_NDOTPROD,
+	PROF_LA_NDOTPROD_CONJ,
+	PROF_LA_NDOTPRODSELF_CONJ,
+	PROF_LA_NDOTPRODSELF_CONJ_NORM2,
+	PROF_LA_NINCREM110_CMPLX,
+	PROF_LA_NINCREM011_CMPLX,
+	PROF_LA_NINCREM110_D_C_CONJ,
+	PROF_LA_NINCREM111_CMPLX,
+	PROF_LA_NINCREM,
+	PROF_LA_NDECREM,
+	PROF_LA_NINCREM01,
+	PROF_LA_NINCREM10,
+	PROF_LA_NINCREM11_D_C,
+	PROF_LA_NINCREM01_CMPLX,
+	PROF_LA_NINCREM10_CMPLX,
+	PROF_LA_NLINCOMB_CMPLX,
+	PROF_LA_NLINCOMB1_CMPLX,
+	PROF_LA_NLINCOMB1_CMPLX_CONJ,
+	PROF_LA_NSUBTR,
+	PROF_LA_NMULT,
+	PROF_LA_NMULT_CMPLX,
+	PROF_LA_NMULTSELF,
+	PROF_LA_NMULTSELF_CONJ,
+	PROF_LA_NMULTSELF_CMPLX,
+	PROF_LA_NMULT_MAT,
+	PROF_LA_NMULTSELF_MAT,
+	PROF_LA_NCONJ,
+	PROF_LA_COMM,
+	PROF_LA_PARTS
+};
+
+extern TIME_TYPE SolverLinAlgProfileHost[PROF_LA_PARTS];
+extern size_t SolverLinAlgProfileHostCalls[PROF_LA_PARTS];
+extern TIME_TYPE SolverLinAlgProfileHostCurrentIter[PROF_LA_PARTS];
+extern size_t SolverLinAlgProfileHostCurrentIterCalls[PROF_LA_PARTS];
+extern int SolverLinAlgProfileActive,SolverLinAlgProfileIterationActive;
+
+void BeginSolverLinAlgProfile(void);
+void BeginSolverLinAlgProfileIteration(void);
+void EndSolverLinAlgProfileIteration(int complete);
+void EndSolverLinAlgProfile(void);
+#endif
 
 #endif // __timing_h

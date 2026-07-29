@@ -1524,6 +1524,10 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	// redundant initialization to remove warnings
 	time_tmp=time_tmp2=time_tmp3=0;
 
+#ifdef SOLVER_LINALG_PROFILE
+	BeginSolverLinAlgProfile();
+#endif
+
 	/* Instead of solving system (I+D.C).x=b , C - diagonal matrix with couple constants
 	 *                                         D - symmetric interaction matrix of Green's tensor
 	 * we solve system (I+S.D.S).(S.x)=(S.b), S=sqrt(C), then total interaction matrix is symmetric and
@@ -1535,7 +1539,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	/* p=b=(S.Einc) is right part of the linear system; used only here. In iteration methods themselves p is completely
 	 * different vector. To avoid confusion this is done before any other initializations, specific to iterative solvers
 	 */
+	// reset per-solution timings; the last-iteration values stay zero if this solution needs no complete iteration
 	Timing_InitIterComm=Timing_MVP=Timing_MVPComm=0;
+	Timing_OneIter=Timing_OneIterComm=Timing_OneIterMVP=Timing_OneIterMVPComm=0;
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
 	if (!load_chpoint) {
@@ -1588,6 +1594,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	Timing_IntFieldOneComm=Timing_InitIterComm;
 	// main iteration cycle
 	while (inprodR>epsB && niter<=maxiter && counter<=params[ind_m].mc && !chp_exit) {
+#ifdef SOLVER_LINALG_PROFILE
+		BeginSolverLinAlgProfileIteration();
+#endif
 		// initialize time
 		Timing_OneIterComm=Timing_OneIterMVP=Timing_OneIterMVPComm=0;
 		tstart=GET_TIME();
@@ -1610,6 +1619,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 			Timing_OneIterMVP=time_tmp2;
 			Timing_OneIterMVPComm=time_tmp3;
 		}
+#ifdef SOLVER_LINALG_PROFILE
+		EndSolverLinAlgProfileIteration(complete);
+#endif
 		/* check progress; it takes negligible time by itself (O(1) operations), but may lead to saving checkpoint.
 		 * Since the latter is not relevant to the iteration itself, the ProgressReport is called after finalizing the
 		 * time of a single iteration.
@@ -1648,6 +1660,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	 * technique (as starting vector for next system)
 	 */
 	nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
+#ifdef SOLVER_LINALG_PROFILE
+	EndSolverLinAlgProfile();
+#endif
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
 	return (niter-1); // the number of iterations elapsed
 }

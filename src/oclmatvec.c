@@ -78,6 +78,10 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
+#ifdef SOLVER_LINALG_PROFILE
+	const int solver_linalg_profile_was_active=SolverLinAlgProfileActive;
+	SolverLinAlgProfileActive=0; // keep device MatVec work separate from solver linear algebra
+#endif
 #ifdef PRECISE_TIMING
 	const bool profile_this_matvec=(TotalMatVec==0);
 #endif
@@ -228,4 +232,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 #endif
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;
+#ifdef SOLVER_LINALG_PROFILE
+	SolverLinAlgProfileActive=solver_linalg_profile_was_active;
+#endif
 }

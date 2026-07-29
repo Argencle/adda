@@ -25,6 +25,43 @@
 // system headers
 #include <string.h>
 
+#ifdef SOLVER_LINALG_PROFILE
+#	define PROFILE_LA_BEGIN() \
+		const TIME_TYPE profile_la_start_=SolverLinAlgProfileActive ? GET_TIME() : 0
+#	define PROFILE_LA_END(part) do { \
+		if (SolverLinAlgProfileActive) { \
+			const TIME_TYPE profile_la_elapsed_=GET_TIME()-profile_la_start_; \
+			SolverLinAlgProfileHost[(part)]+=profile_la_elapsed_; \
+			SolverLinAlgProfileHostCalls[(part)]++; \
+			if (SolverLinAlgProfileIterationActive) { \
+				SolverLinAlgProfileHostCurrentIter[(part)]+=profile_la_elapsed_; \
+				SolverLinAlgProfileHostCurrentIterCalls[(part)]++; \
+			} \
+		} \
+	} while (0)
+#	ifdef ADDA_MPI
+#		define PROFILE_LA_INNER_PRODUCT(data,type,n,timing) do { \
+			const TIME_TYPE profile_comm_start_=SolverLinAlgProfileActive ? GET_TIME() : 0; \
+			MyInnerProduct((data),(type),(n),(timing)); \
+			if (SolverLinAlgProfileActive) { \
+				const TIME_TYPE profile_comm_elapsed_=GET_TIME()-profile_comm_start_; \
+				SolverLinAlgProfileHost[PROF_LA_COMM]+=profile_comm_elapsed_; \
+				SolverLinAlgProfileHostCalls[PROF_LA_COMM]++; \
+				if (SolverLinAlgProfileIterationActive) { \
+					SolverLinAlgProfileHostCurrentIter[PROF_LA_COMM]+=profile_comm_elapsed_; \
+					SolverLinAlgProfileHostCurrentIterCalls[PROF_LA_COMM]++; \
+				} \
+			} \
+		} while (0)
+#	else
+#		define PROFILE_LA_INNER_PRODUCT(data,type,n,timing) MyInnerProduct((data),(type),(n),(timing))
+#	endif
+#else
+#	define PROFILE_LA_BEGIN()
+#	define PROFILE_LA_END(part)
+#	define PROFILE_LA_INNER_PRODUCT(data,type,n,timing) MyInnerProduct((data),(type),(n),(timing))
+#endif
+
 /* There are several optimization ideas used in this file:
  * - If usage of some function has coinciding arguments, than a special function for such case is created. In
  * particular, this allows consistent usage of 'restrict' keyword almost for all function arguments.
@@ -40,8 +77,11 @@ void nInit(doublecomplex * restrict a)
 {
 	register size_t i;
 	register const size_t n=local_nRows;
+	PROFILE_LA_BEGIN();
+
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i]=0;
+	PROFILE_LA_END(PROF_LA_NINIT);
 }
 
 //======================================================================================================================
@@ -49,7 +89,9 @@ void nInit(doublecomplex * restrict a)
 void nCopy(doublecomplex * restrict a,const doublecomplex * restrict b)
 // copy vector b to a (a=b); !!! they must not alias !!!
 {
+	PROFILE_LA_BEGIN();
 	memcpy(a,b,local_nRows*sizeof(doublecomplex));
+	PROFILE_LA_END(PROF_LA_NCOPY);
 }
 
 //======================================================================================================================
@@ -60,11 +102,13 @@ double nNorm2(const doublecomplex * restrict a,TIME_TYPE *comm_timing)
 	register size_t i;
 	register const size_t n=local_nRows;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) sum+=cAbs2(a[i]);
 	// this function is not called inside the main iteration loop
-	MyInnerProduct(&sum,double_type,1,comm_timing);
+	PROFILE_LA_INNER_PRODUCT(&sum,double_type,1,comm_timing);
+	PROFILE_LA_END(PROF_LA_NNORM2);
 	return sum;
 }
 
@@ -78,10 +122,12 @@ doublecomplex nDotProd(const doublecomplex * restrict a,const doublecomplex * re
 	register size_t i;
 	register const size_t n=local_nRows;
 	doublecomplex sum=0;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) sum+=a[i]*conj(b[i]);
-	MyInnerProduct(&sum,cmplx_type,1,comm_timing);
+	PROFILE_LA_INNER_PRODUCT(&sum,cmplx_type,1,comm_timing);
+	PROFILE_LA_END(PROF_LA_NDOTPROD);
 	return sum;
 }
 
@@ -95,10 +141,12 @@ doublecomplex nDotProd_conj(const doublecomplex * restrict a,const doublecomplex
 	register size_t i;
 	register const size_t n=local_nRows;
 	doublecomplex sum=0;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) sum+=a[i]*b[i];
-	MyInnerProduct(&sum,cmplx_type,1,comm_timing);
+	PROFILE_LA_INNER_PRODUCT(&sum,cmplx_type,1,comm_timing);
+	PROFILE_LA_END(PROF_LA_NDOTPROD_CONJ);
 	return sum;
 }
 
@@ -110,13 +158,15 @@ doublecomplex nDotProdSelf_conj(const doublecomplex * restrict a,TIME_TYPE *comm
 	register size_t i;
 	register const size_t n=local_nRows;
 	doublecomplex sum=0;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	/* Explicit writing the following through real and imaginary types can lead to delaying the multiplication by two
 	 * until the sum is complete. But that is not believed to be significant
 	 */
 	for (i=0;i<n;i++) sum+=a[i]*a[i];
-	MyInnerProduct(&sum,cmplx_type,1,comm_timing);
+	PROFILE_LA_INNER_PRODUCT(&sum,cmplx_type,1,comm_timing);
+	PROFILE_LA_END(PROF_LA_NDOTPRODSELF_CONJ);
 	return sum;
 }
 
@@ -128,6 +178,7 @@ doublecomplex nDotProdSelf_conj_Norm2(const doublecomplex * restrict a,double * 
 	register size_t i;
 	register const size_t n=local_nRows;
 	double buf[3]={0,0,0};
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	// Here the optimization for explicit treatment seems significant, so we keep the old code
@@ -136,8 +187,9 @@ doublecomplex nDotProdSelf_conj_Norm2(const doublecomplex * restrict a,double * 
 		buf[1]+=cimag(a[i])*cimag(a[i]);
 		buf[2]+=creal(a[i])*cimag(a[i]);
 	}
-	MyInnerProduct(buf,double_type,3,comm_timing);
+	PROFILE_LA_INNER_PRODUCT(buf,double_type,3,comm_timing);
 	*norm=buf[0]+buf[1];
+	PROFILE_LA_END(PROF_LA_NDOTPRODSELF_CONJ_NORM2);
 	return buf[0] - buf[1] + I*2*buf[2];
 }
 
@@ -149,9 +201,11 @@ void nIncrem110_cmplx(doublecomplex * restrict a,const doublecomplex * restrict 
 {
 	register size_t i;
 	register const size_t n=local_nRows;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] = c1*a[i] + c2*b[i] + c[i];
+	PROFILE_LA_END(PROF_LA_NINCREM110_CMPLX);
 }
 
 //======================================================================================================================
@@ -162,9 +216,11 @@ void nIncrem011_cmplx(doublecomplex * restrict a,const doublecomplex * restrict 
 {
 	register size_t i;
 	register const size_t n=local_nRows;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] += c1*b[i] + c2*c[i];
+	PROFILE_LA_END(PROF_LA_NINCREM011_CMPLX);
 }
 
 //======================================================================================================================
@@ -178,6 +234,7 @@ void nIncrem110_d_c_conj(doublecomplex * restrict a,const doublecomplex * restri
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -190,8 +247,9 @@ void nIncrem110_d_c_conj(doublecomplex * restrict a,const doublecomplex * restri
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM110_D_C_CONJ);
 }
 
 //======================================================================================================================
@@ -202,9 +260,11 @@ void nIncrem111_cmplx(doublecomplex * restrict a,const doublecomplex * restrict 
 {
 	register size_t i;
 	register const size_t n=local_nRows;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] = c1*a[i] + c2*b[i] + c3*c[i];
+	PROFILE_LA_END(PROF_LA_NINCREM111_CMPLX);
 }
 
 //======================================================================================================================
@@ -216,6 +276,7 @@ void nIncrem(doublecomplex * restrict a,const doublecomplex * restrict b,double 
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -228,8 +289,9 @@ void nIncrem(doublecomplex * restrict a,const doublecomplex * restrict b,double 
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM);
 }
 
 //======================================================================================================================
@@ -241,6 +303,7 @@ void nDecrem(doublecomplex * restrict a,const doublecomplex * restrict b,double 
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -253,8 +316,9 @@ void nDecrem(doublecomplex * restrict a,const doublecomplex * restrict b,double 
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NDECREM);
 }
 
 //======================================================================================================================
@@ -266,6 +330,7 @@ void nIncrem01(doublecomplex * restrict a,const doublecomplex * restrict b,const
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -278,8 +343,9 @@ void nIncrem01(doublecomplex * restrict a,const doublecomplex * restrict b,const
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM01);
 }
 
 //======================================================================================================================
@@ -291,6 +357,7 @@ void nIncrem10(doublecomplex * restrict a,const doublecomplex * restrict b,const
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -303,8 +370,9 @@ void nIncrem10(doublecomplex * restrict a,const doublecomplex * restrict b,const
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM10);
 }
 
 //======================================================================================================================
@@ -316,6 +384,7 @@ void nIncrem11_d_c(doublecomplex * restrict a,const doublecomplex * restrict b,c
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -329,8 +398,9 @@ void nIncrem11_d_c(doublecomplex * restrict a,const doublecomplex * restrict b,c
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM11_D_C);
 }
 
 //======================================================================================================================
@@ -342,6 +412,7 @@ void nIncrem01_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -354,8 +425,9 @@ void nIncrem01_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM01_CMPLX);
 }
 
 //======================================================================================================================
@@ -367,6 +439,7 @@ void nIncrem10_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -379,8 +452,9 @@ void nIncrem10_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NINCREM10_CMPLX);
 }
 
 //======================================================================================================================
@@ -392,6 +466,7 @@ void nLinComb_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -404,8 +479,9 @@ void nLinComb_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NLINCOMB_CMPLX);
 }
 
 //======================================================================================================================
@@ -417,6 +493,7 @@ void nLinComb1_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -429,8 +506,9 @@ void nLinComb1_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NLINCOMB1_CMPLX);
 }
 
 //======================================================================================================================
@@ -442,6 +520,7 @@ void nLinComb1_cmplx_conj(doublecomplex * restrict a,const doublecomplex * restr
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -454,8 +533,9 @@ void nLinComb1_cmplx_conj(doublecomplex * restrict a,const doublecomplex * restr
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NLINCOMB1_CMPLX_CONJ);
 }
 
 
@@ -468,6 +548,7 @@ void nSubtr(doublecomplex * restrict a,const doublecomplex * restrict b,const do
 	register const size_t n=local_nRows;
 	register size_t i;
 	double sum=0;
+	PROFILE_LA_BEGIN();
 
 	if (inprod==NULL) {
 		LARGE_LOOP;
@@ -480,8 +561,9 @@ void nSubtr(doublecomplex * restrict a,const doublecomplex * restrict b,const do
 			sum += cAbs2(a[i]);
 		}
 		(*inprod)=sum;
-		MyInnerProduct(inprod,double_type,1,comm_timing);
+		PROFILE_LA_INNER_PRODUCT(inprod,double_type,1,comm_timing);
 	}
+	PROFILE_LA_END(PROF_LA_NSUBTR);
 }
 
 //======================================================================================================================
@@ -491,9 +573,11 @@ void nMult(doublecomplex * restrict a,const doublecomplex * restrict b,const dou
 {
 	register const size_t n=local_nRows;
 	register size_t i;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] = c*b[i];
+	PROFILE_LA_END(PROF_LA_NMULT);
 }
 
 //======================================================================================================================
@@ -503,9 +587,11 @@ void nMult_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,con
 {
 	register const size_t n=local_nRows;
 	register size_t i;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] = c*b[i];
+	PROFILE_LA_END(PROF_LA_NMULT_CMPLX);
 }
 //======================================================================================================================
 
@@ -514,9 +600,11 @@ void nMultSelf(doublecomplex * restrict a,const double c)
 {
 	register const size_t n=local_nRows;
 	register size_t i;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] *= c;
+	PROFILE_LA_END(PROF_LA_NMULTSELF);
 }
 //======================================================================================================================
 
@@ -525,9 +613,11 @@ void nMultSelf_conj(doublecomplex * restrict a,const double c)
 {
 	register const size_t n=local_nRows;
 	register size_t i;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] = c*conj(a[i]);
+	PROFILE_LA_END(PROF_LA_NMULTSELF_CONJ);
 }
 
 //======================================================================================================================
@@ -537,9 +627,11 @@ void nMultSelf_cmplx(doublecomplex * restrict a,const doublecomplex c)
 {
 	register const size_t n=local_nRows;
 	register size_t i;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i] *= c;
+	PROFILE_LA_END(PROF_LA_NMULTSELF_CMPLX);
 }
 
 //======================================================================================================================
@@ -556,6 +648,7 @@ void nMult_mat(doublecomplex * restrict a,const doublecomplex * restrict b,/*con
 	 * understand that none of the used vectors alias. Otherwise, deeper optimization should be used.
 	 */
 	const doublecomplex * restrict val;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0,k=0;i<nd;i++,k+=3) {
@@ -564,6 +657,7 @@ void nMult_mat(doublecomplex * restrict a,const doublecomplex * restrict b,/*con
 		a[k+1] = val[1]*b[k+1];
 		a[k+2] = val[2]*b[k+2];
 	}
+	PROFILE_LA_END(PROF_LA_NMULT_MAT);
 }
 
 //======================================================================================================================
@@ -580,6 +674,7 @@ void nMultSelf_mat(doublecomplex * restrict a,/*const*/ doublecomplex (* restric
 	 * understand that none of the used vectors alias. Otherwise, deeper optimization should be used.
 	 */
 	const doublecomplex * restrict val;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0,k=0;i<nd;i++,k+=3) {
@@ -588,6 +683,7 @@ void nMultSelf_mat(doublecomplex * restrict a,/*const*/ doublecomplex (* restric
 		a[k+1] *= val[1];
 		a[k+2] *= val[2];
 	}
+	PROFILE_LA_END(PROF_LA_NMULTSELF_MAT);
 }
 
 //======================================================================================================================
@@ -597,7 +693,9 @@ void nConj(doublecomplex * restrict a)
 {
 	register const size_t n=local_nRows;
 	register size_t i;
+	PROFILE_LA_BEGIN();
 
 	LARGE_LOOP;
 	for (i=0;i<n;i++) a[i]=conj(a[i]);
+	PROFILE_LA_END(PROF_LA_NCONJ);
 }
