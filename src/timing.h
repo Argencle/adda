@@ -96,10 +96,29 @@ enum solver_linalg_profile_function {
 	PROF_LA_PARTS
 };
 
+#ifdef OCL_BLAS
+// OpenCL command durations are stored in seconds, as returned by event profiling timestamps
+enum solver_linalg_profile_opencl_operation {
+	PROF_LA_OPENCL_ZDOTU,
+	PROF_LA_OPENCL_ZDOTC,
+	PROF_LA_OPENCL_ZSCAL,
+	PROF_LA_OPENCL_ZAXPY,
+	PROF_LA_OPENCL_COPY,
+	PROF_LA_OPENCL_ZERO,
+	PROF_LA_OPENCL_PARTS
+};
+#endif
+
 extern TIME_TYPE SolverLinAlgProfileHost[PROF_LA_PARTS];
 extern size_t SolverLinAlgProfileHostCalls[PROF_LA_PARTS];
 extern TIME_TYPE SolverLinAlgProfileHostCurrentIter[PROF_LA_PARTS];
 extern size_t SolverLinAlgProfileHostCurrentIterCalls[PROF_LA_PARTS];
+#ifdef OCL_BLAS
+extern double SolverLinAlgProfileOpenCL[PROF_LA_OPENCL_PARTS];
+extern size_t SolverLinAlgProfileOpenCLCalls[PROF_LA_OPENCL_PARTS];
+extern double SolverLinAlgProfileOpenCLCurrentIter[PROF_LA_OPENCL_PARTS];
+extern size_t SolverLinAlgProfileOpenCLCurrentIterCalls[PROF_LA_OPENCL_PARTS];
+#endif
 extern int SolverLinAlgProfileActive,SolverLinAlgProfileIterationActive;
 
 void BeginSolverLinAlgProfile(void);
