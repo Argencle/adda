@@ -24,8 +24,6 @@
 #include "prec_time.h"
 #include "sparse_ops.h"
 #include "vars.h"
-// system headers
-#include <stdlib.h>
 
 // SEMI-GLOBAL VARIABLES
 
@@ -42,11 +40,67 @@ extern const size_t RsizeY;
 // defined and initialized in timing.c
 extern size_t TotalMatVec;
 
-// EXTERNAL FUNCTIONS
-
 #ifdef PRECISE_TIMING
-// calculator.c
-void FreeEverything(void); // for proper finalization
+static struct {
+	bool ready;
+	SYSTEM_TIME start,end;
+	SYSTEM_TIME FFTXf,FFTYf,FFTZf,FFTXb,FFTYb,FFTZb;
+	SYSTEM_TIME Mult1,Mult2,Mult3,Mult4,Mult5;
+	SYSTEM_TIME BTf,BTb,TYZf,TYZb,ipr;
+} precise_matvec_timing;
+
+void PrintPreciseMatVecTiming(void)
+// print the detailed timing captured during the first matrix-vector product
+{
+	double t_FFTXf,t_FFTYf,t_FFTZf,t_FFTXb,t_FFTYb,t_FFTZb;
+	double t_Mult1,t_Mult2,t_Mult3,t_Mult4,t_Mult5,t_ipr,t_BTf,t_BTb,t_TYZf,t_TYZb;
+	double t_Arithm,t_FFT,t_Comm;
+
+	if (!precise_matvec_timing.ready || !IFROOT) return;
+	t_Mult1=TimerToSec(&precise_matvec_timing.Mult1);
+	t_Mult2=TimerToSec(&precise_matvec_timing.Mult2);
+	t_Mult3=TimerToSec(&precise_matvec_timing.Mult3);
+	t_Mult4=TimerToSec(&precise_matvec_timing.Mult4);
+	t_Mult5=TimerToSec(&precise_matvec_timing.Mult5);
+	t_TYZf=TimerToSec(&precise_matvec_timing.TYZf);
+	t_TYZb=TimerToSec(&precise_matvec_timing.TYZb);
+	t_BTf=TimerToSec(&precise_matvec_timing.BTf);
+	t_BTb=TimerToSec(&precise_matvec_timing.BTb);
+	t_FFTXf=TimerToSec(&precise_matvec_timing.FFTXf);
+	t_FFTXb=TimerToSec(&precise_matvec_timing.FFTXb);
+	t_FFTYf=TimerToSec(&precise_matvec_timing.FFTYf);
+	t_FFTYb=TimerToSec(&precise_matvec_timing.FFTYb);
+	t_FFTZf=TimerToSec(&precise_matvec_timing.FFTZf);
+	t_FFTZb=TimerToSec(&precise_matvec_timing.FFTZb);
+	t_ipr=TimerToSec(&precise_matvec_timing.ipr);
+	t_Arithm=t_Mult1+t_Mult2+t_Mult3+t_Mult4+t_Mult5+t_TYZf+t_TYZb;
+	t_FFT=t_FFTXf+t_FFTYf+t_FFTZf+t_FFTXb+t_FFTYb+t_FFTZb;
+	t_Comm=t_BTf+t_BTb+t_ipr;
+
+	PrintBoth(logfile,
+		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+		"          First MatVec timing              \n"
+		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+		"Arith1 = "FFORMPT"    Arithmetics = "FFORMPT"\n"
+		"FFTXf  = "FFORMPT"    FFT         = "FFORMPT"\n"
+		"BTf    = "FFORMPT"    Comm        = "FFORMPT"\n"
+		"Arith2 = "FFORMPT"\n"
+		"FFTZf  = "FFORMPT"          Total = "FFORMPT"\n"
+		"TYZf   = "FFORMPT"\n"
+		"FFTYf  = "FFORMPT"\n"
+		"Arith3 = "FFORMPT"\n"
+		"FFTYb  = "FFORMPT"\n"
+		"TYZb   = "FFORMPT"\n"
+		"FFTZb  = "FFORMPT"\n"
+		"Arith4 = "FFORMPT"\n"
+		"BTb    = "FFORMPT"\n"
+		"FFTXb  = "FFORMPT"\n"
+		"Arith5 = "FFORMPT"\n"
+		"InProd = "FFORMPT"\n\n",
+		t_Mult1,t_Arithm,t_FFTXf,t_FFT,t_BTf,t_Comm,t_Mult2,t_FFTZf,
+		DiffSystemTime(&precise_matvec_timing.start,&precise_matvec_timing.end),t_TYZf,t_FFTYf,t_Mult3,t_FFTYb,
+		t_TYZb,t_FFTZb,t_Mult4,t_BTb,t_FFTXb,t_Mult5,t_ipr);
+}
 #endif
 
 #ifndef SPARSE
@@ -146,11 +200,10 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	size_t index,y,z,Xcomp;
 	unsigned char mat;
 #ifdef PRECISE_TIMING
+	const bool profile_this_matvec=(TotalMatVec==0);
 	SYSTEM_TIME tvp[18];
 	SYSTEM_TIME Timing_FFTXf,Timing_FFTYf,Timing_FFTZf,Timing_FFTXb,Timing_FFTYb,Timing_FFTZb,Timing_Mult1,Timing_Mult2,
 		Timing_Mult3,Timing_Mult4,Timing_Mult5,Timing_BTf,Timing_BTb,Timing_TYZf,Timing_TYZb,Timing_ipr;
-	double t_FFTXf,t_FFTYf,t_FFTZf,t_FFTXb,t_FFTYb,t_FFTZb,t_Mult1,t_Mult2,t_Mult3,t_Mult4,t_Mult5,t_ipr,t_BTf,t_BTb,
-		t_TYZf,t_TYZb,t_Arithm,t_FFT,t_Comm;
 #endif
 
 	/* MV_SYMMETRIZED:
@@ -194,16 +247,18 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	ipr=(inprod!=NULL);
 	if (ipr && !ipr_required) LogError(ONE_POS,"Incompatibility error in MatVec");
 #ifdef PRECISE_TIMING
-	InitTime(&Timing_FFTYf);
-	InitTime(&Timing_FFTZf);
-	InitTime(&Timing_FFTYb);
-	InitTime(&Timing_FFTZb);
-	InitTime(&Timing_Mult2);
-	InitTime(&Timing_Mult3);
-	InitTime(&Timing_Mult4);
-	InitTime(&Timing_TYZf);
-	InitTime(&Timing_TYZb);
-	GET_SYSTEM_TIME(tvp);
+	if (profile_this_matvec) {
+		InitTime(&Timing_FFTYf);
+		InitTime(&Timing_FFTZf);
+		InitTime(&Timing_FFTYb);
+		InitTime(&Timing_FFTZb);
+		InitTime(&Timing_Mult2);
+		InitTime(&Timing_Mult3);
+		InitTime(&Timing_Mult4);
+		InitTime(&Timing_TYZf);
+		InitTime(&Timing_TYZb);
+		GET_SYSTEM_TIME(tvp);
+	}
 #endif
 	// FFT_matvec code
 	if (ipr) *inprod = 0.0;
@@ -227,21 +282,27 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		}
 	}
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+1);
-	Elapsed(tvp,tvp+1,&Timing_Mult1);
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+1);
+		Elapsed(tvp,tvp+1,&Timing_Mult1);
+	}
 #endif
 	// FFT X
 	fftX(FFT_FORWARD); // fftX (buf)Xmatrix
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+2);
-	Elapsed(tvp+1,tvp+2,&Timing_FFTXf);
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+2);
+		Elapsed(tvp+1,tvp+2,&Timing_FFTXf);
+	}
 #endif
 #ifdef PARALLEL
 	BlockTranspose(Xmatrix,comm_timing);
 #endif
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+3);
-	Elapsed(tvp+2,tvp+3,&Timing_BTf);
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+3);
+		Elapsed(tvp+2,tvp+3,&Timing_BTf);
+	}
 #endif
 	// following is done by slices
 	for(x=local_x0;x<local_x1;x++) {
@@ -251,7 +312,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		 * nprocs) - issue 177
 		 */
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+4);
+		if (profile_this_matvec) GET_SYSTEM_TIME(tvp+4);
 #endif
 		// clear slice
 		for(i=0;i<3*gridYZ;i++) slices[i]=0.0;
@@ -264,25 +325,33 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		// create a copy of slice, which is further transformed differently
 		if (surface) memcpy(slicesR,slices,3*gridYZ*sizeof(doublecomplex));
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+5);
-		ElapsedInc(tvp+4,tvp+5,&Timing_Mult2);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+5);
+			ElapsedInc(tvp+4,tvp+5,&Timing_Mult2);
+		}
 #endif
 		// FFT z&y
 		fftZ(FFT_FORWARD); // fftZ (buf)slices (and reflected terms)
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+6);
-		ElapsedInc(tvp+5,tvp+6,&Timing_FFTZf);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+6);
+			ElapsedInc(tvp+5,tvp+6,&Timing_FFTZf);
+		}
 #endif
 		TransposeYZ(FFT_FORWARD); // including reflecting terms
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+7);
-		ElapsedInc(tvp+6,tvp+7,&Timing_TYZf);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+7);
+			ElapsedInc(tvp+6,tvp+7,&Timing_TYZf);
+		}
 #endif
 		fftY(FFT_FORWARD); // fftY (buf)slices_tr (and reflected terms)
-#ifdef PRECISE_TIMING//
-		GET_SYSTEM_TIME(tvp+8);
-		ElapsedInc(tvp+7,tvp+8,&Timing_FFTYf);
-#endif//
+#ifdef PRECISE_TIMING
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+8);
+			ElapsedInc(tvp+7,tvp+8,&Timing_FFTYf);
+		}
+#endif
 		// do the product D~*X~  and R~*X'~
 		for(z=0;z<gridZ;z++) for(y=0;y<gridY;y++) {
 			i=IndexSliceZY(y,z);
@@ -320,24 +389,32 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 			for (Xcomp=0;Xcomp<3;Xcomp++) slices_tr[i+Xcomp*gridYZ]=yv[Xcomp];
 		}
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+9);
-		ElapsedInc(tvp+8,tvp+9,&Timing_Mult3);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+9);
+			ElapsedInc(tvp+8,tvp+9,&Timing_Mult3);
+		}
 #endif
 		// inverse FFT y&z
 		fftY(FFT_BACKWARD); // fftY (buf)slices_tr
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+10);
-		ElapsedInc(tvp+9,tvp+10,&Timing_FFTYb);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+10);
+			ElapsedInc(tvp+9,tvp+10,&Timing_FFTYb);
+		}
 #endif
 		TransposeYZ(FFT_BACKWARD);
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+11);
-		ElapsedInc(tvp+10,tvp+11,&Timing_TYZb);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+11);
+			ElapsedInc(tvp+10,tvp+11,&Timing_TYZb);
+		}
 #endif
 		fftZ(FFT_BACKWARD); // fftZ (buf)slices
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+12);
-		ElapsedInc(tvp+11,tvp+12,&Timing_FFTZb);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+12);
+			ElapsedInc(tvp+11,tvp+12,&Timing_FFTZb);
+		}
 #endif
 		//arith4 on host
 		// copy slice back to Xmatrix
@@ -347,8 +424,10 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[j+Xcomp*local_Nsmall]=slices[i+Xcomp*gridYZ];
 		}
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+13);
-		ElapsedInc(tvp+12,tvp+13,&Timing_Mult4);
+		if (profile_this_matvec) {
+			GET_SYSTEM_TIME(tvp+13);
+			ElapsedInc(tvp+12,tvp+13,&Timing_Mult4);
+		}
 #endif
 	} // end of loop over slices
 	// FFT-X back the result
@@ -356,13 +435,17 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	BlockTranspose(Xmatrix,comm_timing);
 #endif
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+14);
-	Elapsed(tvp+13,tvp+14,&Timing_BTb);
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+14);
+		Elapsed(tvp+13,tvp+14,&Timing_BTb);
+	}
 #endif
 	fftX(FFT_BACKWARD); // fftX (buf)Xmatrix
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+15);
-	Elapsed(tvp+14,tvp+15,&Timing_FFTXb);
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+15);
+		Elapsed(tvp+14,tvp+15,&Timing_FFTXb);
+	}
 #endif
 	// fill resultvec
 	for (i=0;i<local_nvoid_Ndip;i++) {
@@ -387,62 +470,36 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		nConj(argvec); // conjugate back argvec, so it remains unchanged after MatVec
 	}
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+16);
-	Elapsed(tvp+15,tvp+16,&Timing_Mult5);
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+16);
+		Elapsed(tvp+15,tvp+16,&Timing_Mult5);
+	}
 #endif
 	if (ipr) MyInnerProduct(inprod,double_type,1,comm_timing);
 #ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+17);
-	Elapsed(tvp+16,tvp+17,&Timing_ipr);
-
-	t_Mult1=TimerToSec(&Timing_Mult1);
-	t_Mult2=TimerToSec(&Timing_Mult2);
-	t_Mult3=TimerToSec(&Timing_Mult3);
-	t_Mult4=TimerToSec(&Timing_Mult4);
-	t_Mult5=TimerToSec(&Timing_Mult5);
-	t_TYZf=TimerToSec(&Timing_TYZf);
-	t_TYZb=TimerToSec(&Timing_TYZb);
-	t_BTf=TimerToSec(&Timing_BTf);
-	t_BTb=TimerToSec(&Timing_BTb);
-	t_FFTXf=TimerToSec(&Timing_FFTXf);
-	t_FFTXb=TimerToSec(&Timing_FFTXb);
-	t_FFTYf=TimerToSec(&Timing_FFTYf);
-	t_FFTYb=TimerToSec(&Timing_FFTYb);
-	t_FFTZf=TimerToSec(&Timing_FFTZf);
-	t_FFTZb=TimerToSec(&Timing_FFTZb);
-	t_ipr=TimerToSec(&Timing_ipr);
-
-	t_Arithm=t_Mult1+t_Mult2+t_Mult3+t_Mult4+t_Mult5+t_TYZf+t_TYZb;
-	t_FFT=t_FFTXf+t_FFTYf+t_FFTZf+t_FFTXb+t_FFTYb+t_FFTZb;
-	t_Comm=t_BTf+t_BTb+t_ipr;
-
-	if (IFROOT) {
-		PrintBoth(logfile,
-			"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-			"                MatVec timing              \n"
-			"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-			"Arith1 = "FFORMPT"    Arithmetics = "FFORMPT"\n"
-			"FFTXf  = "FFORMPT"    FFT         = "FFORMPT"\n"
-			"BTf    = "FFORMPT"    Comm        = "FFORMPT"\n"
-			"Arith2 = "FFORMPT"\n"
-			"FFTZf  = "FFORMPT"          Total = "FFORMPT"\n"
-			"TYZf   = "FFORMPT"\n"
-			"FFTYf  = "FFORMPT"\n"
-			"Arith3 = "FFORMPT"\n"
-			"FFTYb  = "FFORMPT"\n"
-			"TYZb   = "FFORMPT"\n"
-			"FFTZb  = "FFORMPT"\n"
-			"Arith4 = "FFORMPT"\n"
-			"BTb    = "FFORMPT"\n"
-			"FFTXb  = "FFORMPT"\n"
-			"Arith5 = "FFORMPT"\n"
-			"InProd = "FFORMPT"\n\n",
-			t_Mult1,t_Arithm,t_FFTXf,t_FFT,t_BTf,t_Comm,t_Mult2,t_FFTZf,DiffSystemTime(tvp,tvp+17),t_TYZf,t_FFTYf,
-			t_Mult3,t_FFTYb,t_TYZb,t_FFTZb,t_Mult4,t_BTb,t_FFTXb,t_Mult5,t_ipr);
-		PRINTFB("\nPrecise timing is complete. Finishing execution.\n");
+	if (profile_this_matvec) {
+		GET_SYSTEM_TIME(tvp+17);
+		Elapsed(tvp+16,tvp+17,&Timing_ipr);
+		precise_matvec_timing.start=tvp[0];
+		precise_matvec_timing.end=tvp[17];
+		precise_matvec_timing.FFTXf=Timing_FFTXf;
+		precise_matvec_timing.FFTYf=Timing_FFTYf;
+		precise_matvec_timing.FFTZf=Timing_FFTZf;
+		precise_matvec_timing.FFTXb=Timing_FFTXb;
+		precise_matvec_timing.FFTYb=Timing_FFTYb;
+		precise_matvec_timing.FFTZb=Timing_FFTZb;
+		precise_matvec_timing.Mult1=Timing_Mult1;
+		precise_matvec_timing.Mult2=Timing_Mult2;
+		precise_matvec_timing.Mult3=Timing_Mult3;
+		precise_matvec_timing.Mult4=Timing_Mult4;
+		precise_matvec_timing.Mult5=Timing_Mult5;
+		precise_matvec_timing.BTf=Timing_BTf;
+		precise_matvec_timing.BTb=Timing_BTb;
+		precise_matvec_timing.TYZf=Timing_TYZf;
+		precise_matvec_timing.TYZb=Timing_TYZb;
+		precise_matvec_timing.ipr=Timing_ipr;
+		precise_matvec_timing.ready=true;
 	}
-	FreeEverything();
-	Stop(EXIT_SUCCESS);
 #endif
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;

@@ -16,9 +16,9 @@
 #define __prec_time_h
 
 /* Precise timing gives an accuracy of order micro_sec. It gives extensive information on timing of FFT initialization,
- * D-matrix initialization, and Matrix Vector multiplication. It is optimized to consume as little time as possible by
- * itself. It is used mostly for locating and optimizing the bottlenecks of the code execution. It is not ANSI C,
- * therefore is system dependent, though is expected to work for most.
+ * D-matrix initialization, and the first Matrix Vector multiplication. It is optimized to consume as little time as
+ * possible by itself. It is used mostly for locating and optimizing the bottlenecks of the code execution. It is not
+ * ANSI C, therefore is system dependent, though is expected to work for most.
  */
 
 #ifdef PRECISE_TIMING
@@ -37,6 +37,7 @@
 
 void InitTime(SYSTEM_TIME * restrict t);
 void SetTimerFreq(void);
+void PrintPreciseMatVecTiming(void);
 double TimerToSec(const SYSTEM_TIME * restrict t) ATT_PURE;
 double DiffSec(const SYSTEM_TIME * restrict t1,const SYSTEM_TIME * restrict t2) ATT_PURE;
 
