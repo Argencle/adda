@@ -69,6 +69,16 @@ TIME_TYPE Timing_Particle,                 // for particle construction
 // used in matvec.c
 size_t TotalMatVec; // total number of matrix-vector products
 
+#ifdef SOLVER_LINALG_PROFILE
+TIME_TYPE SolverLinAlgProfileHost[PROF_LA_PARTS];
+size_t SolverLinAlgProfileHostCalls[PROF_LA_PARTS];
+TIME_TYPE SolverLinAlgProfileHostCurrentIter[PROF_LA_PARTS];
+size_t SolverLinAlgProfileHostCurrentIterCalls[PROF_LA_PARTS];
+static TIME_TYPE SolverLinAlgProfileHostLastIter[PROF_LA_PARTS];
+static size_t SolverLinAlgProfileHostLastIterCalls[PROF_LA_PARTS];
+int SolverLinAlgProfileActive,SolverLinAlgProfileIterationActive;
+#endif
+
 // LOCAL VARIABLES
 SYSTEM_TIME wt_start; // starting wall time
 
@@ -140,6 +150,108 @@ void InitTiming(void)
 	Timing_Dm_Init=Timing_Granul=Timing_FFT_Init=Timing_GranulComm=0;
 #endif	
 }
+
+//======================================================================================================================
+
+#ifdef SOLVER_LINALG_PROFILE
+void BeginSolverLinAlgProfile(void)
+// reset cumulative profile counters and enable profiling for one run of the iterative solver
+{
+	for (size_t i=0;i<PROF_LA_PARTS;i++) {
+		SolverLinAlgProfileHost[i]=0;
+		SolverLinAlgProfileHostCalls[i]=0;
+		SolverLinAlgProfileHostCurrentIter[i]=SolverLinAlgProfileHostLastIter[i]=0;
+		SolverLinAlgProfileHostCurrentIterCalls[i]=SolverLinAlgProfileHostLastIterCalls[i]=0;
+	}
+	SolverLinAlgProfileActive=1;
+	SolverLinAlgProfileIterationActive=0;
+}
+
+//======================================================================================================================
+
+void BeginSolverLinAlgProfileIteration(void)
+// start accounting for one iteration, separately from the whole solver run
+{
+	for (size_t i=0;i<PROF_LA_PARTS;i++) {
+		SolverLinAlgProfileHostCurrentIter[i]=0;
+		SolverLinAlgProfileHostCurrentIterCalls[i]=0;
+	}
+	SolverLinAlgProfileIterationActive=1;
+}
+
+//======================================================================================================================
+
+void EndSolverLinAlgProfileIteration(const int complete)
+// preserve this profile only if the solver considers the iteration complete
+{
+	SolverLinAlgProfileIterationActive=0;
+	if (complete) for (size_t i=0;i<PROF_LA_PARTS;i++) {
+		SolverLinAlgProfileHostLastIter[i]=SolverLinAlgProfileHostCurrentIter[i];
+		SolverLinAlgProfileHostLastIterCalls[i]=SolverLinAlgProfileHostCurrentIterCalls[i];
+	}
+}
+
+//======================================================================================================================
+
+void EndSolverLinAlgProfile(void)
+// stop accounting operations after the iterative-solver run
+{
+	SolverLinAlgProfileActive=SolverLinAlgProfileIterationActive=0;
+}
+
+//======================================================================================================================
+
+static void PrintSolverLinAlgProfile(const TIME_TYPE profile[PROF_LA_PARTS],
+	const size_t profile_calls[PROF_LA_PARTS],const char *const indent)
+// print one scope of the host-side linear-algebra profile
+{
+	static const char *const names[PROF_LA_COMM]={
+		"nInit",
+		"nCopy",
+		"nNorm2",
+		"nDotProd",
+		"nDotProd_conj",
+		"nDotProdSelf_conj",
+		"nDotProdSelf_conj_Norm2",
+		"nIncrem110_cmplx",
+		"nIncrem011_cmplx",
+		"nIncrem110_d_c_conj",
+		"nIncrem111_cmplx",
+		"nIncrem",
+		"nDecrem",
+		"nIncrem01",
+		"nIncrem10",
+		"nIncrem11_d_c",
+		"nIncrem01_cmplx",
+		"nIncrem10_cmplx",
+		"nLinComb_cmplx",
+		"nLinComb1_cmplx",
+		"nLinComb1_cmplx_conj",
+		"nSubtr",
+		"nMult",
+		"nMult_cmplx",
+		"nMultSelf",
+		"nMultSelf_conj",
+		"nMultSelf_cmplx",
+		"nMult_mat",
+		"nMultSelf_mat",
+		"nConj"
+	};
+	TIME_TYPE total=0;
+
+	for (size_t i=0;i<PROF_LA_COMM;i++) {
+		total+=profile[i];
+	}
+	fprintf(logfile,"%slinear algebra:      "FFORMT"\n",indent,TO_SEC(total));
+	for (size_t i=0;i<PROF_LA_COMM;i++) if (profile_calls[i]!=0)
+		fprintf(logfile,"%s  %-29s "FFORMT" (%zu calls)\n",indent,names[i],TO_SEC(profile[i]),profile_calls[i]);
+#ifdef ADDA_MPI
+	if (profile_calls[PROF_LA_COMM]!=0) fprintf(logfile,
+		"%s  %-29s "FFORMT" (%zu calls)\n",indent,"MPI communication (included)",TO_SEC(profile[PROF_LA_COMM]),
+		profile_calls[PROF_LA_COMM]);
+#endif
+}
+#endif
 
 //======================================================================================================================
 
@@ -249,6 +361,9 @@ void FinalStatistics(void)
 			fprintf(logfile,
 				"        communication:       "FFORMT"\n",TO_SEC(Timing_InitIterComm));
 #endif
+#ifdef SOLVER_LINALG_PROFILE
+			PrintSolverLinAlgProfile(SolverLinAlgProfileHost,SolverLinAlgProfileHostCalls,"      ");
+#endif
 			fprintf(logfile,
 				"      one iteration:       "FFORMT"\n",TO_SEC(Timing_OneIter));
 #ifdef PARALLEL
@@ -260,6 +375,9 @@ void FinalStatistics(void)
 #ifdef PARALLEL
 			fprintf(logfile,
 				"          communication:       "FFORMT"\n",TO_SEC(Timing_OneIterMVPComm));
+#endif
+#ifdef SOLVER_LINALG_PROFILE
+			PrintSolverLinAlgProfile(SolverLinAlgProfileHostLastIter,SolverLinAlgProfileHostLastIterCalls,"        ");
 #endif
 			fprintf(logfile,
 				"  Scattered fields:    "FFORMT"\n",TO_SEC(Timing_EField));

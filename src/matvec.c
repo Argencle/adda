@@ -205,6 +205,10 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	SYSTEM_TIME Timing_FFTXf,Timing_FFTYf,Timing_FFTZf,Timing_FFTXb,Timing_FFTYb,Timing_FFTZb,Timing_Mult1,Timing_Mult2,
 		Timing_Mult3,Timing_Mult4,Timing_Mult5,Timing_BTf,Timing_BTb,Timing_TYZf,Timing_TYZb,Timing_ipr;
 #endif
+#ifdef SOLVER_LINALG_PROFILE
+	const int solver_linalg_profile_was_active=SolverLinAlgProfileActive;
+	SolverLinAlgProfileActive=0; // do not count linalg helpers both here and in the MatVec time
+#endif
 
 	/* MV_SYMMETRIZED:
 	 * A = I + S.D.S
@@ -503,6 +507,9 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 #endif
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;
+#ifdef SOLVER_LINALG_PROFILE
+	SolverLinAlgProfileActive=solver_linalg_profile_was_active;
+#endif
 }
 
 #else // SPARSE is defined
@@ -522,6 +529,10 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 {
 	const bool ipr = (inprod != NULL);
 	size_t i,j,i3;
+#ifdef SOLVER_LINALG_PROFILE
+	const int solver_linalg_profile_was_active=SolverLinAlgProfileActive;
+	SolverLinAlgProfileActive=0; // do not count linalg helpers both here and in the MatVec time
+#endif
 
 	TIME_TYPE tstart=GET_TIME();
 	if (her) nConj(argvec);
@@ -556,6 +567,9 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	if (ipr) (*inprod)=nNorm2(resultvec,comm_timing);
 	(*timing) += GET_TIME() - tstart;
 	TotalMatVec++;
+#ifdef SOLVER_LINALG_PROFILE
+	SolverLinAlgProfileActive=solver_linalg_profile_was_active;
+#endif
 }
 
 #endif // SPARSE

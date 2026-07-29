@@ -84,7 +84,8 @@ ifneq ($(if $(MAKECMDGOALS),$(if $(filter $(NONTRIVIAL),$(MAKECMDGOALS)),1,),1),
 # one argument in quotes with its parts separated by spaces, e.g. 'make OPTIONS="DEBUG FFT_TEMPERTON" ...'. OPTIONS that
 # are uncommented below are appended to the list specified elsewhere. Full list of possible options is the following:
 VALID_OPTS := DEBUG DEBUGFULL FFT_TEMPERTON PRECISE_TIMING NOT_USE_LOCK ONLY_LOCKFILE NO_FORTRAN NO_CPP \
-              OVERRIDE_STDC_TEST OCL_READ_SOURCE_RUNTIME CLFFT_APPLE SPARSE USE_SSE3 OCL_BLAS NO_GITHASH HOMEBREW \
+              OVERRIDE_STDC_TEST OCL_READ_SOURCE_RUNTIME CLFFT_APPLE SPARSE USE_SSE3 OCL_BLAS SOLVER_LINALG_PROFILE \
+              NO_GITHASH HOMEBREW \
 
 # Debug mode. By default, release configuration is used (no debug, no warnings, maximum optimization). DEBUG turns on
 # producing debugging symbols (-g) and warnings and brings optimization down to O1. DEBUGFULL turns off optimization 
@@ -100,6 +101,9 @@ VALID_OPTS := DEBUG DEBUGFULL FFT_TEMPERTON PRECISE_TIMING NOT_USE_LOCK ONLY_LOC
 
 # Precise timing of initialization and the first MatVec (prec_timing.h).
 #override OPTIONS += PRECISE_TIMING
+
+# Cumulative profiling of linear-algebra operations during one iterative-solver run.
+#override OPTIONS += SOLVER_LINALG_PROFILE
 
 # Controls the mode of file locking, if any (io.h). Use at maximum one of the following options.
 #override OPTIONS += NOT_USE_LOCK
@@ -281,6 +285,10 @@ ifneq ($(filter PRECISE_TIMING,$(OPTIONS)),)
   $(info Precise timing of initialization and the first MatVec)
   CDEFS += -DPRECISE_TIMING
   CSOURCE += prec_time.c
+endif
+ifneq ($(filter SOLVER_LINALG_PROFILE,$(OPTIONS)),)
+  $(info Cumulative solver linear-algebra profiling)
+  CDEFS += -DSOLVER_LINALG_PROFILE
 endif
 ifneq ($(filter NOT_USE_LOCK,$(OPTIONS)),)
   $(info No locks at all)
