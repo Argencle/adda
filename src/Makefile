@@ -110,7 +110,8 @@ VALID_OPTS := DEBUG DEBUGFULL FFT_TEMPERTON PRECISE_TIMING NOT_USE_LOCK ONLY_LOC
 # Precise timing of initialization and the first MatVec (prec_timing.h).
 #override OPTIONS += PRECISE_TIMING
 
-# Cumulative profiling of linear-algebra operations during one iterative-solver run.
+# Cumulative profiling of linear-algebra operations during one iterative-solver run. In OCL_BLAS mode, OpenCL events
+# additionally measure the device commands used by the solver.
 #override OPTIONS += SOLVER_LINALG_PROFILE
 
 # Controls the mode of file locking, if any (io.h). Use at maximum one of the following options.

@@ -389,7 +389,13 @@ void oclinit(void)
 	oclMem=oclMemPeak=oclMemMaxObj=0;
 
 	// for now we use in-order execution only, since it is much safer
-	command_queue=clCreateCommandQueue(context,device_id,0,&err);
+#if defined(OCL_BLAS) && defined(SOLVER_LINALG_PROFILE)
+	// event timestamps are available only on a queue created with profiling enabled
+	const cl_command_queue_properties queue_properties=CL_QUEUE_PROFILING_ENABLE;
+#else
+	const cl_command_queue_properties queue_properties=0;
+#endif
+	command_queue=clCreateCommandQueue(context,device_id,queue_properties,&err);
 	CL_CH_ERR(err);
 
 #ifdef OCL_READ_SOURCE_RUNTIME

@@ -36,6 +36,7 @@
 
 #ifdef OCL_BLAS
 #	include "oclcore.h"
+#	include "ocl_profile.h"
 #	include <clBLAS.h> //external library
 #	include <clBLAS.version.h>
 #endif
@@ -643,7 +644,7 @@ ITER_FUNC(BiCG_CS)
 			CREATE_CL_BUFFER(bufro_new,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
 			CREATE_CL_BUFFER(bufmu,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
 			CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufro_new,0,bufrvec,0,1,bufrvec,0,1,buftmp,1,&command_queue,0,NULL,
-				NULL));
+				PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZDOTU)));
 			CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufro_new,CL_TRUE,0,sizeof(doublecomplex),&ro_new,0,NULL,NULL));
 #else
 			ro_new=nDotProdSelf_conj(rvec,&Timing_OneIterComm);
@@ -655,7 +656,8 @@ ITER_FUNC(BiCG_CS)
 			if (dtmp<EPS1) LogError(ONE_POS,"BiCG_CS fails: |rT.r|/(r.r) is too small ("GFORM_DEBUG").",dtmp);
 			if (niter==1) {
 #ifdef OCL_BLAS
-				clEnqueueCopyBuffer(command_queue,bufrvec,bufpvec,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL);
+				CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufrvec,bufpvec,0,0,sizeof(doublecomplex)*local_nRows,0,
+					NULL,PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_COPY)));
 #else
 				nCopy(pvec,rvec); // p_1=r_0
 #endif 
@@ -666,9 +668,11 @@ ITER_FUNC(BiCG_CS)
 				// p_k=beta_k-1*p_k-1+r_k-1
 #ifdef OCL_BLAS
 				cl_double2 clbeta = {.s={creal(beta),cimag(beta)}};
-				CLBLAS_CH_ERR(clblasZscal(local_nRows,clbeta,bufpvec,0,1,1,&command_queue,0,NULL,NULL));
+				CLBLAS_CH_ERR(clblasZscal(local_nRows,clbeta,bufpvec,0,1,1,&command_queue,0,NULL,
+					PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZSCAL)));
 				cl_double2 clunit = {.s={1,0}};
-				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufrvec,0,1,bufpvec,0,1,1,&command_queue,0,NULL,NULL));
+				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufrvec,0,1,bufpvec,0,1,1,&command_queue,0,NULL,
+					PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
 #else
 				nIncrem10_cmplx(pvec,rvec,beta,NULL,NULL);
 #endif
@@ -679,7 +683,7 @@ ITER_FUNC(BiCG_CS)
 			// mu_k=p_k.q_k; check for mu_k!=0
 #ifdef OCL_BLAS
 			CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufmu,0,bufpvec,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,NULL,
-				NULL));
+				PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZDOTU)));
 			CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufmu,CL_TRUE,0,sizeof(doublecomplex),&mu,0,NULL,NULL));
 #else
 			mu=nDotProd_conj(pvec,Avecbuffer,&Timing_OneIterComm);
@@ -692,7 +696,8 @@ ITER_FUNC(BiCG_CS)
 			// x_k=x_k-1+alpha_k*p_k
 #ifdef OCL_BLAS
 			cl_double2 clalpha = {.s={creal(alpha),cimag(alpha)}};
-			CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clalpha,bufpvec,0,1,bufxvec,0,1,1,&command_queue,0,NULL,NULL));
+			CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clalpha,bufpvec,0,1,bufxvec,0,1,1,&command_queue,0,NULL,
+				PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
 #else
 			nIncrem01_cmplx(xvec,pvec,alpha,NULL,NULL);
 #endif
@@ -701,7 +706,8 @@ ITER_FUNC(BiCG_CS)
 #ifdef OCL_BLAS
 			cl_double2 cltemp = {.s={creal(temp),cimag(temp)}};
 			CREATE_CL_BUFFER(bufinprodRp1,CL_MEM_READ_WRITE,2*sizeof(double),NULL); // 2 due to workaround below
-			CLBLAS_CH_ERR(clblasZaxpy(local_nRows,cltemp,bufAvecbuffer,0,1,bufrvec,0,1,1,&command_queue,0,NULL,NULL));
+			CLBLAS_CH_ERR(clblasZaxpy(local_nRows,cltemp,bufAvecbuffer,0,1,bufrvec,0,1,1,&command_queue,0,NULL,
+				PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
 			/* kernel for function clblasDznrm2 fails to compile (during ADDA execution) with modern OpenCL
 			 * implementations, since the latter strictly impose conformance to the standard. Since, the compilation
 			 * options for these kernels are not accessible, here we use a workaround through the complex dot-product
@@ -711,7 +717,8 @@ ITER_FUNC(BiCG_CS)
 			 * The commented out parts will then facilitate reverting to calling a norm function.
 			 */
 			//CLBLAS_CH_ERR(clblasDznrm2(local_nRows,bufinprodRp1,0,bufrvec,0,1,buftmp,1,&command_queue,0,NULL,NULL));
-			CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufinprodRp1,0,bufrvec,0,1,bufrvec,0,1,buftmp,1,&command_queue,0,NULL,NULL));
+			CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufinprodRp1,0,bufrvec,0,1,bufrvec,0,1,buftmp,1,&command_queue,0,
+				NULL,PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZDOTC)));
 			CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufinprodRp1,CL_TRUE,0,sizeof(double),&inprodRp1,0,NULL,NULL));
 			//inprodRp1=inprodRp1*inprodRp1; // dot product returns already squared norm
 #else

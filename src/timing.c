@@ -17,6 +17,9 @@
 // project headers
 #include "comm.h"
 #include "io.h"
+#if defined(OCL_BLAS) && defined(SOLVER_LINALG_PROFILE)
+#	include "ocl_profile.h"
+#endif
 #include "prec_time.h"
 #include "vars.h"
 // system headers
@@ -76,6 +79,14 @@ TIME_TYPE SolverLinAlgProfileHostCurrentIter[PROF_LA_PARTS];
 size_t SolverLinAlgProfileHostCurrentIterCalls[PROF_LA_PARTS];
 static TIME_TYPE SolverLinAlgProfileHostLastIter[PROF_LA_PARTS];
 static size_t SolverLinAlgProfileHostLastIterCalls[PROF_LA_PARTS];
+#ifdef OCL_BLAS
+double SolverLinAlgProfileOpenCL[PROF_LA_OPENCL_PARTS];
+size_t SolverLinAlgProfileOpenCLCalls[PROF_LA_OPENCL_PARTS];
+double SolverLinAlgProfileOpenCLCurrentIter[PROF_LA_OPENCL_PARTS];
+size_t SolverLinAlgProfileOpenCLCurrentIterCalls[PROF_LA_OPENCL_PARTS];
+static double SolverLinAlgProfileOpenCLLastIter[PROF_LA_OPENCL_PARTS];
+static size_t SolverLinAlgProfileOpenCLLastIterCalls[PROF_LA_OPENCL_PARTS];
+#endif
 int SolverLinAlgProfileActive,SolverLinAlgProfileIterationActive;
 #endif
 
@@ -163,6 +174,14 @@ void BeginSolverLinAlgProfile(void)
 		SolverLinAlgProfileHostCurrentIter[i]=SolverLinAlgProfileHostLastIter[i]=0;
 		SolverLinAlgProfileHostCurrentIterCalls[i]=SolverLinAlgProfileHostLastIterCalls[i]=0;
 	}
+#ifdef OCL_BLAS
+	for (size_t i=0;i<PROF_LA_OPENCL_PARTS;i++) {
+		SolverLinAlgProfileOpenCL[i]=0;
+		SolverLinAlgProfileOpenCLCalls[i]=0;
+		SolverLinAlgProfileOpenCLCurrentIter[i]=SolverLinAlgProfileOpenCLLastIter[i]=0;
+		SolverLinAlgProfileOpenCLCurrentIterCalls[i]=SolverLinAlgProfileOpenCLLastIterCalls[i]=0;
+	}
+#endif
 	SolverLinAlgProfileActive=1;
 	SolverLinAlgProfileIterationActive=0;
 }
@@ -176,6 +195,12 @@ void BeginSolverLinAlgProfileIteration(void)
 		SolverLinAlgProfileHostCurrentIter[i]=0;
 		SolverLinAlgProfileHostCurrentIterCalls[i]=0;
 	}
+#ifdef OCL_BLAS
+	for (size_t i=0;i<PROF_LA_OPENCL_PARTS;i++) {
+		SolverLinAlgProfileOpenCLCurrentIter[i]=0;
+		SolverLinAlgProfileOpenCLCurrentIterCalls[i]=0;
+	}
+#endif
 	SolverLinAlgProfileIterationActive=1;
 }
 
@@ -184,11 +209,20 @@ void BeginSolverLinAlgProfileIteration(void)
 void EndSolverLinAlgProfileIteration(const int complete)
 // preserve this profile only if the solver considers the iteration complete
 {
+#ifdef OCL_BLAS
+	SolverLinAlgProfileCollectOpenCLEvents();
+#endif
 	SolverLinAlgProfileIterationActive=0;
 	if (complete) for (size_t i=0;i<PROF_LA_PARTS;i++) {
 		SolverLinAlgProfileHostLastIter[i]=SolverLinAlgProfileHostCurrentIter[i];
 		SolverLinAlgProfileHostLastIterCalls[i]=SolverLinAlgProfileHostCurrentIterCalls[i];
 	}
+#ifdef OCL_BLAS
+	if (complete) for (size_t i=0;i<PROF_LA_OPENCL_PARTS;i++) {
+		SolverLinAlgProfileOpenCLLastIter[i]=SolverLinAlgProfileOpenCLCurrentIter[i];
+		SolverLinAlgProfileOpenCLLastIterCalls[i]=SolverLinAlgProfileOpenCLCurrentIterCalls[i];
+	}
+#endif
 }
 
 //======================================================================================================================
@@ -196,16 +230,25 @@ void EndSolverLinAlgProfileIteration(const int complete)
 void EndSolverLinAlgProfile(void)
 // stop accounting operations after the iterative-solver run
 {
+#ifdef OCL_BLAS
+	SolverLinAlgProfileCollectOpenCLEvents();
+	SolverLinAlgProfileFreeOpenCLEvents();
+#endif
 	SolverLinAlgProfileActive=SolverLinAlgProfileIterationActive=0;
 }
 
 //======================================================================================================================
 
-static void PrintSolverLinAlgProfile(const TIME_TYPE profile[PROF_LA_PARTS],
-	const size_t profile_calls[PROF_LA_PARTS],const char *const indent)
-// print one scope of the host-side linear-algebra profile
+static void PrintSolverLinAlgProfile(const TIME_TYPE profile_host[PROF_LA_PARTS],
+	const size_t profile_host_calls[PROF_LA_PARTS],
+#ifdef OCL_BLAS
+	const double profile_opencl[PROF_LA_OPENCL_PARTS],
+	const size_t profile_opencl_calls[PROF_LA_OPENCL_PARTS],
+#endif
+	const char *const indent)
+// print one scope of the host-function and OpenCL-command linear-algebra profile
 {
-	static const char *const names[PROF_LA_COMM]={
+	static const char *const host_names[PROF_LA_COMM]={
 		"nInit",
 		"nCopy",
 		"nNorm2",
@@ -237,18 +280,37 @@ static void PrintSolverLinAlgProfile(const TIME_TYPE profile[PROF_LA_PARTS],
 		"nMultSelf_mat",
 		"nConj"
 	};
-	TIME_TYPE total=0;
+#ifdef OCL_BLAS
+	static const char *const opencl_names[PROF_LA_OPENCL_PARTS]={
+		"clBLAS Zdotu event",
+		"clBLAS Zdotc event",
+		"clBLAS Zscal event",
+		"clBLAS Zaxpy event",
+		"OpenCL buffer-copy event",
+		"OpenCL zero-kernel event"
+	};
+#endif
+	double total=0;
 
 	for (size_t i=0;i<PROF_LA_COMM;i++) {
-		total+=profile[i];
+		total+=TO_SEC(profile_host[i]);
 	}
-	fprintf(logfile,"%slinear algebra:      "FFORMT"\n",indent,TO_SEC(total));
-	for (size_t i=0;i<PROF_LA_COMM;i++) if (profile_calls[i]!=0)
-		fprintf(logfile,"%s  %-29s "FFORMT" (%zu calls)\n",indent,names[i],TO_SEC(profile[i]),profile_calls[i]);
+#ifdef OCL_BLAS
+	for (size_t i=0;i<PROF_LA_OPENCL_PARTS;i++) total+=profile_opencl[i];
+#endif
+	fprintf(logfile,"%slinear algebra:      "FFORMT"\n",indent,total);
+	for (size_t i=0;i<PROF_LA_COMM;i++) if (profile_host_calls[i]!=0)
+		fprintf(logfile,"%s  %-29s "FFORMT" (%zu calls)\n",indent,host_names[i],TO_SEC(profile_host[i]),
+			profile_host_calls[i]);
+#ifdef OCL_BLAS
+	for (size_t i=0;i<PROF_LA_OPENCL_PARTS;i++) if (profile_opencl_calls[i]!=0)
+		fprintf(logfile,"%s  %-29s "FFORMT" (%zu calls)\n",indent,opencl_names[i],profile_opencl[i],
+			profile_opencl_calls[i]);
+#endif
 #ifdef ADDA_MPI
-	if (profile_calls[PROF_LA_COMM]!=0) fprintf(logfile,
-		"%s  %-29s "FFORMT" (%zu calls)\n",indent,"MPI communication (included)",TO_SEC(profile[PROF_LA_COMM]),
-		profile_calls[PROF_LA_COMM]);
+	if (profile_host_calls[PROF_LA_COMM]!=0) fprintf(logfile,
+		"%s  %-29s "FFORMT" (%zu calls)\n",indent,"MPI communication (included)",
+		TO_SEC(profile_host[PROF_LA_COMM]),profile_host_calls[PROF_LA_COMM]);
 #endif
 }
 #endif
@@ -362,7 +424,11 @@ void FinalStatistics(void)
 				"        communication:       "FFORMT"\n",TO_SEC(Timing_InitIterComm));
 #endif
 #ifdef SOLVER_LINALG_PROFILE
-			PrintSolverLinAlgProfile(SolverLinAlgProfileHost,SolverLinAlgProfileHostCalls,"      ");
+			PrintSolverLinAlgProfile(SolverLinAlgProfileHost,SolverLinAlgProfileHostCalls,
+#	ifdef OCL_BLAS
+				SolverLinAlgProfileOpenCL,SolverLinAlgProfileOpenCLCalls,
+#	endif
+				"      ");
 #endif
 			fprintf(logfile,
 				"      one iteration:       "FFORMT"\n",TO_SEC(Timing_OneIter));
@@ -377,7 +443,11 @@ void FinalStatistics(void)
 				"          communication:       "FFORMT"\n",TO_SEC(Timing_OneIterMVPComm));
 #endif
 #ifdef SOLVER_LINALG_PROFILE
-			PrintSolverLinAlgProfile(SolverLinAlgProfileHostLastIter,SolverLinAlgProfileHostLastIterCalls,"        ");
+			PrintSolverLinAlgProfile(SolverLinAlgProfileHostLastIter,SolverLinAlgProfileHostLastIterCalls,
+#	ifdef OCL_BLAS
+				SolverLinAlgProfileOpenCLLastIter,SolverLinAlgProfileOpenCLLastIterCalls,
+#	endif
+				"        ");
 #endif
 			fprintf(logfile,
 				"  Scattered fields:    "FFORMT"\n",TO_SEC(Timing_EField));

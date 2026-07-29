@@ -71,6 +71,9 @@ else # the following is only for non-sparse mode
     LDLIBS += -lclBLAS
 
     CFLAGS += -DOCL_BLAS
+    ifneq ($(filter SOLVER_LINALG_PROFILE,$(OPTIONS)),)
+      CSOURCE += ocl_profile.c
+    endif
     # If you have any problems during linking, see above for issues related to clFFT. The same solutions may work
     # for clBLAS
   endif
