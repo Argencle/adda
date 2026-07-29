@@ -83,6 +83,10 @@ endif
 # !!! End of control section. Everything below is not designed to be modified by user
 #=======================================================================================================================
 
+ifneq ($(filter PRECISE_TIMING,$(OPTIONS)),)
+  CSOURCE += ocl_matvec_profile.c
+endif
+
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
   LDLIBS  += -framework OpenCL

@@ -394,7 +394,7 @@ void oclinit(void)
 	oclMem=oclMemPeak=oclMemMaxObj=0;
 
 	// for now we use in-order execution only, since it is much safer
-#if defined(OCL_BLAS) && defined(SOLVER_LINALG_PROFILE)
+#if defined(PRECISE_TIMING) || (defined(OCL_BLAS) && defined(SOLVER_LINALG_PROFILE))
 	// event timestamps are available only on a queue created with profiling enabled
 	const cl_command_queue_properties queue_properties=CL_QUEUE_PROFILING_ENABLE;
 #else
