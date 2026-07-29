@@ -45,6 +45,7 @@ extern cl_kernel clzero,clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface
 extern cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 #ifdef OCL_BLAS
+extern cl_kernel clshifted_bicg_vtmp,clshifted_bicg_scale_copy,clshifted_bicg_update;
 extern cl_mem buftmp,bufrvec,bufxvec,bufvpr,bufvtmp,bufvnext,bufpArray,bufxArray;
 #endif
 extern cl_mem bufRmatrix,bufslicesR,bufslicesR_tr;

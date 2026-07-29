@@ -1,4 +1,4 @@
-/* Kernel file for OpenCL kernels. Includes all subfunctions of the Matvec routine as OpenCL kernels
+/* Kernel file for OpenCL kernels. Includes kernels used by the MatVec routine and iterative solvers
  *
  * Copyright (C) ADDA contributors
  * This file is part of ADDA.
@@ -58,6 +58,14 @@ void cMult2(__constant double2 *a,__global const double2 *b,double2 *c)
 
 //======================================================================================================================
 
+double2 cMultValue(const double2 a,const double2 b)
+// complex multiplication of two values
+{
+	return (double2)(a.s0*b.s0-a.s1*b.s1,a.s1*b.s0+a.s0*b.s1);
+}
+
+//======================================================================================================================
+
 double cvNorm2(__global const double2 *a)
 // square of the norm of a complex vector[3]
 {
@@ -82,6 +90,46 @@ __kernel void clzero(__global double2 *input)
 	const size_t id = get_global_id(0);
 
 	input[id] = 0.0;
+}
+
+//======================================================================================================================
+
+__kernel void shifted_bicg_vtmp(__global const double2 *Avec,__global const double2 *vcur,
+	__global const double2 *vpr,__global double2 *vtmp,const double2 alpha,const double2 beta)
+// alpha=-alfa1 and beta=-beta_pr, hence
+// vtmp=Avec-alfa1*vcur-beta_pr*vpr
+{
+	const size_t id=get_global_id(0);
+	double2 value=Avec[id];
+
+	value+=cMultValue(alpha,vcur[id]);
+	value+=cMultValue(beta,vpr[id]);
+	vtmp[id]=value;
+}
+
+//======================================================================================================================
+
+__kernel void shifted_bicg_scale_copy(__global const double2 *src,__global double2 *dest,const double2 scale)
+// dest=scale*src
+{
+	const size_t id=get_global_id(0);
+
+	dest[id]=cMultValue(scale,src[id]);
+}
+
+//======================================================================================================================
+
+__kernel void shifted_bicg_update(__global const double2 *vcur,__global double2 *pArray,__global double2 *xArray,
+	const in_sizet offset,const double2 pscale,const double2 xscale)
+// pArray=vcur+pscale*pArray; xArray+=xscale*pArray for one shifted system
+{
+	const size_t id=get_global_id(0);
+	const size_t index=offset+id;
+	double2 p=cMultValue(pscale,pArray[index]);
+
+	p+=vcur[id];
+	pArray[index]=p;
+	xArray[index]+=cMultValue(xscale,p);
 }
 
 //======================================================================================================================

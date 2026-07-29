@@ -1316,6 +1316,16 @@ ITER_FUNC(Shifted_BiCG_CS)
 		D("clBLAS library version - %u.%u.%u",major,minor,patch);
 		D("clblasSetup started");
 		CLBLAS_CH_ERR(clblasSetup());
+		// The vector arguments of the fused kernels stay constant throughout the solver run.
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_vtmp,0,sizeof(cl_mem),&bufAvecbuffer));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_vtmp,1,sizeof(cl_mem),&bufvcur));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_vtmp,2,sizeof(cl_mem),&bufvpr));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_vtmp,3,sizeof(cl_mem),&bufvtmp));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_scale_copy,0,sizeof(cl_mem),&bufvtmp));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_scale_copy,1,sizeof(cl_mem),&bufvnext));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_update,0,sizeof(cl_mem),&bufvcur));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_update,1,sizeof(cl_mem),&bufpArray));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_update,2,sizeof(cl_mem),&bufxArray));
 		CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufvcur,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,rvec,0,
 			NULL,NULL));
 		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
@@ -1388,22 +1398,16 @@ ITER_FUNC(Shifted_BiCG_CS)
 #else
 		alfa1=nDotProd_conj(vcur, Avecbuffer, &Timing_OneIterComm);
 #endif
-		// vtmp=-alfa1*vcur+A.vcur
+		// vtmp=Avecbuffer-alfa1*vcur-beta_pr*vpr
 #ifdef OCL_BLAS
-		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufAvecbuffer,bufvtmp,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,
-			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_COPY)));
 		cl_double2 clmalfa1 = {.s={creal(-alfa1),cimag(-alfa1)}};
-		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmalfa1,bufvcur,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,
-			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
+		cl_double2 clmbeta_pr = {.s={creal(-beta_pr),cimag(-beta_pr)}};
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_vtmp,4,sizeof(clmalfa1),&clmalfa1));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_vtmp,5,sizeof(clmbeta_pr),&clmbeta_pr));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clshifted_bicg_vtmp,1,NULL,&local_nRows,NULL,0,NULL,
+			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_FUSED_VTMP)));
 #else
 		nLinComb_cmplx(vtmp,vcur,Avecbuffer,-alfa1,1,NULL,&Timing_OneIterComm);
-#endif
-		// vtmp=vtmp-beta0*vprev
-#ifdef OCL_BLAS
-		cl_double2 clmbeta = {.s={creal(-beta_pr),cimag(-beta_pr)}};
-		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmbeta,bufvpr,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,
-			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
-#else
 		nIncrem01_cmplx(vtmp,vpr,-beta_pr,NULL,&Timing_OneIterComm);
 #endif
 		// beta_cur=|vtmp|ps
@@ -1416,11 +1420,10 @@ ITER_FUNC(Shifted_BiCG_CS)
 #endif
 		beta_cur=csqrt(beta_cur);
 #ifdef OCL_BLAS
-		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvtmp,bufvnext,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,
-			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_COPY)));
 		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
-		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufvnext,0,1,1,&command_queue,0,NULL,
-			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZSCAL)));
+		CL_CH_ERR(clSetKernelArg(clshifted_bicg_scale_copy,2,sizeof(clinvbeta),&clinvbeta));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clshifted_bicg_scale_copy,1,NULL,&local_nRows,NULL,0,NULL,
+			PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_SCALE_COPY)));
 #else
 		nMult_cmplx(vnext, vtmp, 1/beta_cur);
 #endif
@@ -1442,24 +1445,20 @@ ITER_FUNC(Shifted_BiCG_CS)
 				if(niter==1) uArray[i]=beta_pr;
 				else uArray[i]=-lArray[i]*uArray[i];
 				// pArray[i]=vcur-lArray[i]*pArray[i]
+				// xArray[i]=xArray[i]+uArray[i]/dArray[i]*pArray[i]
 #ifdef OCL_BLAS
 				const size_t offset=(size_t)i*local_nRows;
 				cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
-				CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,
-					PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZSCAL)));
-				cl_double2 clunit = {.s={1,0}};
-				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,NULL,
-					PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
+				const doublecomplex xcoef=uArray[i]/dArray[i];
+				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
+				CL_CH_ERR(clSetKernelArg(clshifted_bicg_update,3,sizeof(offset),&offset));
+				CL_CH_ERR(clSetKernelArg(clshifted_bicg_update,4,sizeof(clml),&clml));
+				CL_CH_ERR(clSetKernelArg(clshifted_bicg_update,5,sizeof(clxcoef),&clxcoef));
+				CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clshifted_bicg_update,1,NULL,&local_nRows,NULL,0,NULL,
+					PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_SHIFT_UPDATE)));
 #else
 				nIncrem10_cmplx(pArray[i],vcur,-lArray[i],NULL,&Timing_OneIterComm);
-#endif
-				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
 				const doublecomplex xcoef=uArray[i]/dArray[i];
-#ifdef OCL_BLAS
-				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
-				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,&command_queue,
-					0,NULL,PROFILE_LA_OPENCL_EVENT(PROF_LA_OPENCL_ZAXPY)));
-#else
 				nIncrem01_cmplx(xArray[i],pArray[i],xcoef,NULL,&Timing_OneIterComm);
 #endif
 				//current residual

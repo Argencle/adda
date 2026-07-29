@@ -286,6 +286,9 @@ static void PrintSolverLinAlgProfile(const TIME_TYPE profile_host[PROF_LA_PARTS]
 		"clBLAS Zdotc event",
 		"clBLAS Zscal event",
 		"clBLAS Zaxpy event",
+		"OpenCL fused-vtmp event",
+		"OpenCL fused scale-copy event",
+		"OpenCL fused shift-update event",
 		"OpenCL buffer-copy event",
 		"OpenCL zero-kernel event"
 	};

@@ -50,6 +50,7 @@ cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultve
 bool bufupload=true;
 
 #ifdef OCL_BLAS
+cl_kernel clshifted_bicg_vtmp,clshifted_bicg_scale_copy,clshifted_bicg_update;
 cl_mem buftmp;  // temporary buffer for dot products and Norm (as required by clBLAS library)
 cl_mem bufrvec; // buffer used in iterative solver
 cl_mem bufxvec; // buffer used in iterative solver
@@ -450,6 +451,16 @@ void oclinit(void)
 	}
 	clzero=clCreateKernel(program,"clzero",&err);
 	CL_CH_ERR(err);
+#ifdef OCL_BLAS
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		clshifted_bicg_vtmp=clCreateKernel(program,"shifted_bicg_vtmp",&err);
+		CL_CH_ERR(err);
+		clshifted_bicg_scale_copy=clCreateKernel(program,"shifted_bicg_scale_copy",&err);
+		CL_CH_ERR(err);
+		clshifted_bicg_update=clCreateKernel(program,"shifted_bicg_update",&err);
+		CL_CH_ERR(err);
+	}
+#endif
 	clarith1=clCreateKernel(program,"arith1",&err);
 	CL_CH_ERR(err);
 	clarith1_raw=clCreateKernel(program,"arith1_raw",&err);
@@ -551,6 +562,13 @@ void oclunload(void)
 	D("oclunload started");
 	CL_CH_ERR(clReleaseProgram(program));
 	CL_CH_ERR(clReleaseKernel(clzero));
+#ifdef OCL_BLAS
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		CL_CH_ERR(clReleaseKernel(clshifted_bicg_vtmp));
+		CL_CH_ERR(clReleaseKernel(clshifted_bicg_scale_copy));
+		CL_CH_ERR(clReleaseKernel(clshifted_bicg_update));
+	}
+#endif
 	CL_CH_ERR(clReleaseKernel(clarith1));
 	CL_CH_ERR(clReleaseKernel(clarith1_raw));
 	CL_CH_ERR(clReleaseKernel(clarith2));
