@@ -31,6 +31,7 @@
 #include "fft.h"
 #include "io.h"
 #include "oclcore.h"
+#include "ocl_matvec_profile.h"
 #include "prec_time.h"
 #include "vars.h"
 
@@ -55,9 +56,11 @@ void PrintPreciseMatVecTiming(void)
 		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 		"          First MatVec timing              \n"
 		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-		"Total = "FFORMPT"\n\n"
-		"Precise timing does not provide an internal MatVec breakdown in OpenCL mode.\n\n",
+		"%-21s = "FFORMPT_OCL"\n",
+		"Total (CPU wall clock)",
 		DiffSystemTime(&precise_matvec_timing.start,&precise_matvec_timing.end));
+	PrintFirstMatVecOpenCLProfile();
+	PrintBoth(logfile,"\n");
 }
 #endif
 
@@ -112,13 +115,13 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 * complex code.
 	 */
 	TIME_TYPE tstart=GET_TIME();
-	transposed=(!reduced_FFT) && her;
-	ipr=(inprod!=NULL);
-	if (ipr && !ipr_required) LogError(ONE_POS,"Incompatibility error in MatVec");
 #ifdef PRECISE_TIMING
 	SYSTEM_TIME tvp[2];
 	if (profile_this_matvec) GET_SYSTEM_TIME(tvp);
 #endif
+	transposed=(!reduced_FFT) && her;
+	ipr=(inprod!=NULL);
+	if (ipr && !ipr_required) LogError(ONE_POS,"Incompatibility error in MatVec");
 	// FFT_matvec code
 	if (ipr) *inprod = 0.0;
 	const cl_char ndcomp=NDCOMP;
@@ -140,19 +143,24 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	}
 	// write into buffers e.g. upload to device; non-blocking
 	if (bufupload) CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufargvec,CL_FALSE,0,local_nRows*sizeof(doublecomplex),
-		argvec,0,NULL,NULL));
+		argvec,0,NULL,PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_UPLOAD_ARGUMENT)));
 
 	size_t xmsize=local_Nsmall*3;
 	if (her) {
 		CL_CH_ERR(clSetKernelArg(clnConj,0,sizeof(cl_mem),&bufargvec));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clnConj,1,NULL,&local_nRows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clnConj,1,NULL,&local_nRows,NULL,0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_CONJ_INPUT)));
 	}
 	// setting (buf)Xmatrix with zeros (on device)
 	CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufXmatrix));
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&xmsize,NULL,0,NULL,NULL));
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith1,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&xmsize,NULL,0,NULL,
+		PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ZERO_X)));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith1,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,
+		PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ARITH1)));
 	// FFT X
+	PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_FFT_X_FORWARD);
 	fftX(FFT_FORWARD); // fftX (buf)Xmatrix
+	PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
 
 	/* In OpenCL mode the free memory on the GPU was determined during fft.c and if enough memory is available slices
 	 * contain the full fft grid. If not, FFT grid is split into "clxslices" parts with "local_gridX" length and kernels
@@ -174,48 +182,71 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		}
 		// every index and argument prepared, starting arith2
 		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufslices));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&slicesize,NULL,0,NULL,NULL));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith2,3,gwo24,gwsarith24,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&slicesize,NULL,0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ZERO_SLICES)));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith2,3,gwo24,gwsarith24,NULL,0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ARITH2)));
 		if (surface) CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufslices,bufslicesR,0,0,
-			slicesize*sizeof(doublecomplex),0,NULL,NULL));
+			slicesize*sizeof(doublecomplex),0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_COPY_SURFACE)));
 
+		PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_FFT_Z_FORWARD);
 		fftZ(FFT_FORWARD); // fftZ (buf)slices (and reflected terms)
+		PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
+		PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_TRANSPOSE_YZ_FORWARD);
 		TransposeYZ(FFT_FORWARD); // including reflecting terms
+		PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
+		PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_FFT_Y_FORWARD);
 		fftY(FFT_FORWARD); // fftY (buf)slices_tr (and reflected terms)
+		PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
 		// arith3 on Device
 		if (surface) 
-			CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith3_surface,3,gwo3,gwsclarith3,NULL,0,NULL,NULL));
+			CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith3_surface,3,gwo3,gwsclarith3,NULL,0,NULL,
+				PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ARITH3)));
 		else 
-			CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith3,3,gwo3,gwsclarith3,NULL,0,NULL,NULL));
+			CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith3,3,gwo3,gwsclarith3,NULL,0,NULL,
+				PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ARITH3)));
 		// inverse FFT y&z
+		PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_FFT_Y_BACKWARD);
 		fftY(FFT_BACKWARD); // fftY (buf)slices_tr
+		PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
+		PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_TRANSPOSE_YZ_BACKWARD);
 		TransposeYZ(FFT_BACKWARD);
+		PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
+		PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_FFT_Z_BACKWARD);
 		fftZ(FFT_BACKWARD); // fftZ (buf)slices
+		PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
 
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith4,3,gwo24,gwsarith24,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith4,3,gwo24,gwsarith24,NULL,0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ARITH4)));
 	}
 
 	// FFT-X back the result
+	PROFILE_FIRST_MV_OCL_REGION_BEGIN(profile_this_matvec,PROF_MV_OCL_FFT_X_BACKWARD);
 	fftX(FFT_BACKWARD); // fftX (buf)Xmatrix
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith5,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+	PROFILE_FIRST_MV_OCL_REGION_END(profile_this_matvec);
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith5,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,
+		PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_ARITH5)));
 	if (ipr) {
 		/* calculating inner product in OpenCL is more complicated than usually. The norm for each element is calculated
 		 * inside GPU, but the sum is taken by CPU afterwards. Hence, additional large buffers are required.
 		 * Potentially, this can be optimized.
 		 */
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clinprod,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clinprod,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_INPROD)));
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufinproduct,CL_TRUE,0,local_nvoid_Ndip*sizeof(double),inprodhlp,0,
-			NULL,NULL));
+			NULL,PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_DOWNLOAD_INPROD)));
 		// sum up on the CPU after calculating the norm on GPU; hence the read above is blocking
 		for (j=0;j<local_nvoid_Ndip;j++) *inprod+=inprodhlp[j];
 	}
 	if (her) {
 		CL_CH_ERR(clSetKernelArg(clnConj,0,sizeof(cl_mem),&bufresultvec));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clnConj,1,NULL,&local_nRows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clnConj,1,NULL,&local_nRows,NULL,0,NULL,
+			PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_CONJ_OUTPUT)));
 	}
 	// blocking read to finalize queue
 	if (bufupload) CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufresultvec,CL_TRUE,0,local_nRows*sizeof(doublecomplex),
-		resultvec,0,NULL,NULL));
+		resultvec,0,NULL,PROFILE_FIRST_MV_OCL_EVENT(profile_this_matvec,PROF_MV_OCL_DOWNLOAD_RESULT)));
 	if (ipr) MyInnerProduct(inprod,double_type,1,comm_timing);
 	/* While OCL_BLAS keeps the vectors on the device, bufuload is false. Waiting here makes the MatVec timer meaningful.
 	 * This normally only moves forward a synchronization that would happen shortly afterwards at a blocking scalar
@@ -223,14 +254,19 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 */
 	if (!bufupload) CL_CH_ERR(clFinish(command_queue));
 #ifdef PRECISE_TIMING
+	if (profile_this_matvec) GET_SYSTEM_TIME(tvp+1);
+#endif
+	const TIME_TYPE elapsed=GET_TIME()-tstart;
+#ifdef PRECISE_TIMING
 	if (profile_this_matvec) {
-		GET_SYSTEM_TIME(tvp+1);
+		// all captured commands are complete at this point due to the blocking read or clFinish above
+		CollectFirstMatVecOpenCLProfile();
 		precise_matvec_timing.start=tvp[0];
 		precise_matvec_timing.end=tvp[1];
 		precise_matvec_timing.ready=true;
 	}
 #endif
-	(*timing) += GET_TIME() - tstart;
+	(*timing)+=elapsed;
 	TotalMatVec++;
 #ifdef SOLVER_LINALG_PROFILE
 	SolverLinAlgProfileActive=solver_linalg_profile_was_active;
