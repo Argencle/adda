@@ -516,17 +516,34 @@ static inline doublecomplex eta2cmplx(const doublecomplex n[static restrict 3])
 
 //======================================================================================================================
 
-static void CalcFieldFree(doublecomplex ebuff[static restrict 3], // where to write calculated scattering amplitude
-                          const double n[static restrict 3])      // scattering direction
-/* Near-optimal routine to compute the scattered fields at one specific angle (more exactly - scattering amplitude);
- * Specific optimization are possible when e.g. n[0]=0 for scattering in yz-plane, however in this case it is very
- * improbable that the routine will become a bottleneck. The latter happens mostly for cases, when grid of scattering
- * angles is used with only small fraction of n, allowing simplifications.
- */
+static void FinalizeFieldFree(doublecomplex ebuff[static restrict 3],
+	const double n[static restrict 3],const doublecomplex sum[static restrict 3])
+// apply the transverse projection and common scaling to a free-space polarization sum
 {
 	double kkk;
-	doublecomplex a,dpr;
-	doublecomplex sum[3],tbuff[3],tmp=0; // redundant initialization to remove warnings
+	doublecomplex a,dpr,tmp,tbuff[3];
+
+	// tbuff=(I-nxn).sum=sum-n*(n.sum)
+	dpr=crDotProd(sum,n);
+	cvMultScal_RVec(dpr,n,tbuff);
+	cvSubtr(sum,tbuff,tbuff);
+	// ebuff=(-i*k^3)*exp(-ikr0.n)*tbuff, where r0=box_origin_unif
+	a=imExp(-WaveNum*DotProd(box_origin_unif,n)); // a=exp(-ikr0.n)
+	kkk=WaveNum*WaveNum*WaveNum;
+	// the following additional multiplier implements IGT_SO
+	if (ScatRelation==SQ_IGT_SO) kkk*=eta2(n);
+	tmp=-I*a*kkk; // tmp=(-i*k^3)*exp(-ikr0.n)
+	cvMultScal_cmplx(tmp,tbuff,ebuff);
+}
+
+//======================================================================================================================
+
+static void CalcFieldFree(doublecomplex ebuff[static restrict 3], // where to write calculated scattering amplitude
+                          const double n[static restrict 3])      // scattering direction
+// compute the scattered field at one specific angle (more exactly - scattering amplitude)
+{
+	doublecomplex a;
+	doublecomplex sum[3],tmp=0; // redundant initialization to remove warnings
 	int i;
 	unsigned short ix,iy1,iy2,iz1,iz2;
 	size_t j,jjj;
@@ -573,20 +590,150 @@ static void CalcFieldFree(doublecomplex ebuff[static restrict 3], // where to wr
 		// sum(P*exp(-ik*r.n))
 		for(i=0;i<3;i++) sum[i]+=pvec[jjj+i]*a;
 	} /* end for j */
-	
 
-	// tbuff=(I-nxn).sum=sum-n*(n.sum)
-	dpr=crDotProd(sum,n);
-	cvMultScal_RVec(dpr,n,tbuff);
-	cvSubtr(sum,tbuff,tbuff);
-	// ebuff=(-i*k^3)*exp(-ikr0.n)*tbuff, where r0=box_origin_unif
-	a=imExp(-WaveNum*DotProd(box_origin_unif,n)); // a=exp(-ikr0.n)
-	kkk=WaveNum*WaveNum*WaveNum;
-	// the following additional multiplier implements IGT_SO
-	if (ScatRelation==SQ_IGT_SO) kkk*=eta2(n);
-	tmp=-I*a*kkk; // tmp=(-i*k^3)*exp(-ikr0.n)
-	cvMultScal_cmplx(tmp,tbuff,ebuff);
+	FinalizeFieldFree(ebuff,n,sum);
 }
+
+//======================================================================================================================
+
+#ifndef SPARSE
+
+static int FindZeroAxis(const double * restrict directions,const size_t count,const size_t scratch_size,
+	size_t * restrict plane_size)
+/* Find a grid axis that is exactly absent from every observation direction. Return UNDEF if projection onto the
+ * corresponding 2D grid is not expected to reduce the amount of work.
+ */
+{
+	const size_t plane_sizes[3]={
+		(size_t)boxY*(size_t)local_Nz_unif,
+		(size_t)boxX*(size_t)local_Nz_unif,
+		boxXY
+	};
+	double direct_work,projected_work;
+	size_t i;
+	int axis,best_axis=UNDEF;
+
+	if (count<2 || local_nvoid_Ndip==0) return UNDEF;
+	*plane_size=SIZE_MAX;
+	for (axis=0;axis<3;axis++) {
+		for (i=0;i<count;i++) if (directions[3*i+(size_t)axis]!=0) break;
+		if (i==count && plane_sizes[axis]<*plane_size) {
+			best_axis=axis;
+			*plane_size=plane_sizes[axis];
+		}
+	}
+	if (best_axis==UNDEF) return UNDEF;
+	if (*plane_size>scratch_size/3) return UNDEF;
+
+	// Conservatively include one pass over the 2D buffer for initialization.
+	direct_work=(double)count*(double)local_nvoid_Ndip;
+	projected_work=(double)local_nvoid_Ndip+((double)count+1)*(double)(*plane_size);
+	if (projected_work>=direct_work) return UNDEF;
+	return best_axis;
+}
+
+//======================================================================================================================
+
+static void ProjectPolarization(doublecomplex * restrict projected,const int zero_axis,const size_t plane_size)
+// sum the three polarization components along zero_axis onto a dense local 2D grid
+{
+	size_t i,j,j3,index;
+
+	for (i=0;i<3*plane_size;i++) projected[i]=0;
+	switch (zero_axis) {
+		case 0: // Q(y,z)=sum_x P(x,y,z)
+			for (j=0;j<local_nvoid_Ndip;j++) {
+				j3=3*j;
+				index=3*((size_t)position[j3+1]+(size_t)boxY*position[j3+2]);
+				for (i=0;i<3;i++) projected[index+i]+=pvec[j3+i];
+			}
+			break;
+		case 1: // Q(x,z)=sum_y P(x,y,z)
+			for (j=0;j<local_nvoid_Ndip;j++) {
+				j3=3*j;
+				index=3*((size_t)position[j3]+(size_t)boxX*position[j3+2]);
+				for (i=0;i<3;i++) projected[index+i]+=pvec[j3+i];
+			}
+			break;
+		case 2: // Q(x,y)=sum_z P(x,y,z)
+			for (j=0;j<local_nvoid_Ndip;j++) {
+				j3=3*j;
+				index=3*((size_t)position[j3]+(size_t)boxX*position[j3+1]);
+				for (i=0;i<3;i++) projected[index+i]+=pvec[j3+i];
+			}
+			break;
+		default: LogError(ONE_POS,"Invalid zero axis in ProjectPolarization");
+	}
+}
+
+//======================================================================================================================
+
+static void CalcFieldFreeProjectedBatch(doublecomplex * restrict fields,const double * restrict directions,
+	const size_t count,const int zero_axis,const size_t plane_size,doublecomplex * restrict projected)
+/* Calculate a free-space batch after summing the polarization along the grid axis absent from all directions. If
+ * n[zero_axis]=0, the phase is independent of that coordinate, so the 3D sum can be factored into a projection followed
+ * by a 2D sum. The latter is evaluated as two successive 1D sums to save one complex multiplication per grid cell.
+ */
+{
+	doublecomplex sum[3],line_sum[3];
+	doublecomplex *exp_fast,*exp_slow;
+	const double *n;
+	size_t direction,plane_index;
+	double kd_fast,kd_slow;
+	int component,fast,slow,fast_axis,slow_axis,fast_size,slow_size;
+
+	ProjectPolarization(projected,zero_axis,plane_size);
+	switch (zero_axis) {
+		case 0: // yz plane: y is the contiguous dimension in projected
+			fast_axis=1;
+			slow_axis=2;
+			fast_size=boxY;
+			slow_size=local_Nz_unif;
+			kd_fast=kdY;
+			kd_slow=kdZ;
+			exp_fast=expsY;
+			exp_slow=expsZ;
+			break;
+		case 1: // xz plane
+			fast_axis=0;
+			slow_axis=2;
+			fast_size=boxX;
+			slow_size=local_Nz_unif;
+			kd_fast=kdX;
+			kd_slow=kdZ;
+			exp_fast=expsX;
+			exp_slow=expsZ;
+			break;
+		case 2: // xy plane
+			fast_axis=0;
+			slow_axis=1;
+			fast_size=boxX;
+			slow_size=boxY;
+			kd_fast=kdX;
+			kd_slow=kdY;
+			exp_fast=expsX;
+			exp_slow=expsY;
+			break;
+		default: LogError(ONE_POS,"Invalid zero axis in CalcFieldFreeProjectedBatch");
+	}
+
+	for (direction=0;direction<count;direction++) {
+		n=directions+3*direction;
+		imExp_arr(-kd_fast*n[fast_axis],fast_size,exp_fast);
+		imExp_arr(-kd_slow*n[slow_axis],slow_size,exp_slow);
+		cvInit(sum);
+		plane_index=0;
+		for (slow=0;slow<slow_size;slow++) {
+			cvInit(line_sum);
+			for (fast=0;fast<fast_size;fast++,plane_index++) for (component=0;component<3;component++)
+				line_sum[component]+=projected[3*plane_index+(size_t)component]*exp_fast[fast];
+			for (component=0;component<3;component++) sum[component]+=line_sum[component]*exp_slow[slow];
+		}
+		FinalizeFieldFree(fields+3*direction,n,sum);
+	}
+}
+
+#endif // !SPARSE
 
 //======================================================================================================================
 
@@ -802,11 +949,27 @@ void CalcField(doublecomplex ebuff[static restrict 3], // where to write calcula
 
 void CalcFieldBatch(doublecomplex * restrict fields, // 3 complex components for each direction
 	const double * restrict directions,               // packed xyz directions
-	const size_t count)                                // number of directions
-// calculate scattering amplitudes for a batch of directions; currently uses the scalar CPU implementation
+	const size_t count,                                // number of directions
+	doublecomplex * restrict scratch,                  // temporary storage; contents may be overwritten
+	const size_t scratch_size)                         // number of complex values available in scratch
+// calculate scattering amplitudes for a batch of directions
 {
 	size_t i;
 
+#ifndef SPARSE
+	size_t plane_size;
+	int zero_axis;
+
+	if (!surface && (zero_axis=FindZeroAxis(directions,count,scratch_size,&plane_size))!=UNDEF) {
+		D("Using 2D polarization projection along axis %d: %zu dipoles -> %zu cells",zero_axis,
+			local_nvoid_Ndip,plane_size);
+		CalcFieldFreeProjectedBatch(fields,directions,count,zero_axis,plane_size,scratch);
+		return;
+	}
+#else
+	(void)scratch;
+	(void)scratch_size;
+#endif
 	for (i=0;i<count;i++) CalcField(fields+3*i,directions+3*i);
 }
 

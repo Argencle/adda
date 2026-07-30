@@ -37,6 +37,7 @@
 // defined and initialized in calculator.c
 extern double * restrict muel_phi,* restrict muel_phi_buf;
 extern doublecomplex * restrict EplaneX, * restrict EplaneY, * restrict EyzplX, * restrict EyzplY;
+extern doublecomplex * restrict Avecbuffer;
 extern const double dtheta_deg,dtheta_rad;
 extern doublecomplex * restrict ampl_alphaX,* restrict ampl_alphaY;
 extern double * restrict muel_alpha;
@@ -545,7 +546,10 @@ static void CalcPlaneFields(doublecomplex * restrict Eplane,
 		LinComb(axis0,axis90,-si,co,parallel);
 	}
 
-	CalcFieldBatch(workspace->fields,workspace->directions,(size_t)nTheta);
+	/* Avecbuffer is no longer needed by the completed solver. It provides enough scratch space to project the
+	 * polarization onto a 2D grid when all directions have one exactly zero component.
+	 */
+	CalcFieldBatch(workspace->fields,workspace->directions,(size_t)nTheta,Avecbuffer,local_nRows);
 
 	// Convert the vector amplitudes to the perpendicular-parallel frame of each observation direction.
 	for (i=0;i<nTheta;i++) {

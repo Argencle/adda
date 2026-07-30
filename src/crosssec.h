@@ -20,7 +20,8 @@
 #include "types.h" // for doublecomplex
 
 void CalcField(doublecomplex ebuff[static restrict 3],const double n[static restrict 3]);
-void CalcFieldBatch(doublecomplex * restrict fields,const double * restrict directions,size_t count);
+void CalcFieldBatch(doublecomplex * restrict fields,const double * restrict directions,size_t count,
+	doublecomplex * restrict scratch,size_t scratch_size);
 void InitRotation(void);
 double ExtCross(const double * restrict incPol);
 double AbsCross(void);
