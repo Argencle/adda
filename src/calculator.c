@@ -755,6 +755,10 @@ static void AllocateEverything(void)
 	MALLOC_VECTOR(expsY,complex,boxY,ALL);
 	MALLOC_VECTOR(expsZ,complex,local_Nz_unif,ALL);
 #endif // !SPARSE
+	if (yzplane || scat_plane) {
+		tmp=3*(double)nTheta;
+		memory+=tmp*(2*sizeof(double)+sizeof(doublecomplex));
+	}
 	if (yzplane) {
 		tmp=2*(double)nTheta;
 		if (!prognosis) {

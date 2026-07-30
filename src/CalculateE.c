@@ -415,6 +415,72 @@ static bool TestSymVec(const double a[static 3])
 
 //======================================================================================================================
 
+typedef struct {
+	double *directions;     // packed xyz observation directions
+	double *parallel;       // packed xyz parallel-polarization directions
+	doublecomplex *fields;  // packed xyz scattering amplitudes
+} plane_field_workspace;
+
+//======================================================================================================================
+
+static void InitPlaneFieldWorkspace(plane_field_workspace * restrict workspace)
+// allocate reusable host buffers for batched calculation of one scattering plane
+{
+	const size_t size=MultOverflow(3,(size_t)nTheta,ONE_POS_FUNC);
+
+	MALLOC_VECTOR(workspace->directions,double,size,ALL);
+	MALLOC_VECTOR(workspace->parallel,double,size,ALL);
+	MALLOC_VECTOR(workspace->fields,complex,size,ALL);
+}
+
+//======================================================================================================================
+
+static void FreePlaneFieldWorkspace(plane_field_workspace * restrict workspace)
+// free buffers allocated by InitPlaneFieldWorkspace()
+{
+	Free_general(workspace->directions);
+	Free_general(workspace->parallel);
+	Free_cVector(workspace->fields);
+}
+
+//======================================================================================================================
+
+static void CalcPlaneFields(doublecomplex * restrict Eplane,
+	const double axis0[static restrict 3],const double axis90[static restrict 3],
+	const double polPer[static restrict 3],plane_field_workspace * restrict workspace)
+/* Calculate one scattering plane. axis0 and axis90 give the observation directions at theta=0 and 90 degrees,
+ * respectively; polPer is the fixed perpendicular-polarization direction.
+ */
+{
+	int i;
+	double theta,co,si;
+	double *direction,*parallel;
+	doublecomplex *field;
+
+	// Prepare all geometry before evaluating the fields, so the latter can be replaced by a parallel backend.
+	for (i=0;i<nTheta;i++) {
+		theta=i*dtheta_rad;
+		co=cos(theta);
+		si=sin(theta);
+		direction=workspace->directions+3*(size_t)i;
+		parallel=workspace->parallel+3*(size_t)i;
+		LinComb(axis0,axis90,co,si,direction);
+		LinComb(axis0,axis90,-si,co,parallel);
+	}
+
+	CalcFieldBatch(workspace->fields,workspace->directions,(size_t)nTheta);
+
+	// Convert the vector amplitudes to the perpendicular-parallel frame of each observation direction.
+	for (i=0;i<nTheta;i++) {
+		field=workspace->fields+3*(size_t)i;
+		parallel=workspace->parallel+3*(size_t)i;
+		Eplane[2*i]=crDotProd(field,polPer);
+		Eplane[2*i+1]=crDotProd(field,parallel);
+	}
+}
+
+//======================================================================================================================
+
 bool TestExtendThetaRange(void)
 /* Decides whether the range of [0,180] deg should be extended to 360 deg (for a scattering plane). The test is based on
  * orient_avg and the symmetry of the used scattering plane (either yz or scat_plane). The latter corresponds to logic
@@ -430,17 +496,13 @@ bool TestExtendThetaRange(void)
 
 //======================================================================================================================
 
-static void CalcEplaneYZ(const enum incpol which,const enum Eftype type)
+static void CalcEplaneYZ(const enum incpol which,const enum Eftype type,
+	plane_field_workspace * restrict workspace)
 // calculates scattered electric field in a yz-plane (through prop and incPolY)
 {
 	double incPol[3],incPolper[3],incPolpar[3];
 	// where to store calculated field for one plane (actually points to different other arrays)
 	doublecomplex *Eplane;
-	int i;
-	doublecomplex ebuff[3]; // small vector to hold E fields
-	double robserver[3];    // small vector for observer in E calculation
-	double epar[3];         // unit vector in direction of Epar
-	double theta;           // scattering angle
 	double co,si;           // temporary, cos and sin of some angle
 	double alph;
 	TIME_TYPE tstart;
@@ -491,17 +553,7 @@ static void CalcEplaneYZ(const enum incpol which,const enum Eftype type)
 				else Eplane=EyzplX; // choice==INCPOL_X
 			}
 
-			for (i=0;i<nTheta;i++) {
-				theta = i * dtheta_rad;
-				co=cos(theta);
-				si=sin(theta);
-				LinComb(prop,incPolpar,co,si,robserver); // robserver = co*prop + si*incPolpar;
-				CalcField(ebuff,robserver);
-				// convert to (l,r) frame
-				Eplane[2*i]=crDotProd(ebuff,incPolper); // Eper[i]=Esca.incPolper
-				LinComb(prop,incPolpar,-si,co,epar);    // epar=-si*prop+co*incPolpar
-				Eplane[2*i+1]=crDotProd(ebuff,epar);    // Epar[i]=Esca.epar
-			} //  end for i
+			CalcPlaneFields(Eplane,prop,incPolpar,incPolper,workspace);
 
 			// Accumulate Eplane to root and sum
 			D("Accumulating Eplane started");
@@ -518,17 +570,13 @@ static void CalcEplaneYZ(const enum incpol which,const enum Eftype type)
 
 //======================================================================================================================
 
-static void CalcScatPlane(const enum incpol which,const enum Eftype type)
+static void CalcScatPlane(const enum incpol which,const enum Eftype type,
+	plane_field_workspace * restrict workspace)
 // calculates scattered electric field in the plane through ez, prop, incPolX - xz-plane by default
 {
 	double tmp3[3],incPolper[3],incPolpar[3];
 	// where to store calculated field for one plane (actually points to different other arrays)
 	doublecomplex *Eplane;
-	int i;
-	doublecomplex ebuff[3]; // small vector to hold E fields
-	double robserver[3];    // small vector for observer in E calculation
-	double epar[3];         // unit vector in direction of Epar (for scattered field)
-	double theta;           // scattering angle
 	double co,si;           // temporary, cos and sin of some angle
 	double unitSP[3];       // unit vector (perpendicular to ezLab), which determines the scattering plane
 	double alph;
@@ -597,17 +645,7 @@ static void CalcScatPlane(const enum incpol which,const enum Eftype type)
 				else Eplane=EplaneX; // choice==INCPOL_X
 			}
 
-			for (i=0;i<nTheta;i++) {
-				theta = i * dtheta_rad;
-				co=cos(theta);
-				si=sin(theta);
-				LinComb(ezLab,unitSP,co,si,robserver); // robserver = co*ezLab + si*unitSP;
-				CalcField(ebuff,robserver);
-				// convert to (l,r) frame
-				Eplane[2*i]=crDotProd(ebuff,incPolper); // Eper[i]=Esca.incPolper
-				LinComb(ezLab,unitSP,-si,co,epar);        // epar=-si*ezLab+co*unitSP
-				Eplane[2*i+1]=crDotProd(ebuff,epar);    // Epar[i]=Esca.epar
-			} //  end for i
+			CalcPlaneFields(Eplane,ezLab,unitSP,incPolper,workspace);
 
 			// Accumulate Eplane to root and sum
 			D("Accumulating Eplane started");
@@ -858,6 +896,7 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 {
 	int exit_status;
 	TIME_TYPE tstart;
+	plane_field_workspace plane_workspace;
 
 	tstart=GET_TIME();
 	// calculate the incident field Einc; vector b=Einc*cc_sqrt
@@ -874,8 +913,10 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 	// return if checkpoint (normal) occurred
 	if (exit_status==CHP_EXIT) return CHP_EXIT;
 
-	if (yzplane) CalcEplaneYZ(which,type);     // generally plane of incPolY and prop
-	if (scat_plane) CalcScatPlane(which,type); // the scattering plane through ez,prop,incPolX - xz by default
+	if (yzplane || scat_plane) InitPlaneFieldWorkspace(&plane_workspace);
+
+	if (yzplane) CalcEplaneYZ(which,type,&plane_workspace);     // generally plane of incPolY and prop
+	if (scat_plane) CalcScatPlane(which,type,&plane_workspace); // the scattering plane through ez,prop,incPolX - xz by default
 	// Calculate the scattered field for the whole solid-angle
 	if (all_dir) CalcAlldir();
 	// Calculate the scattered field on the given grid of angles
@@ -885,6 +926,7 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 	// saves internal fields and/or dipole (voxel) polarizations to text file
 	if (store_int_field) StoreIntFields(which);
 	if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");
+	if (yzplane || scat_plane) FreePlaneFieldWorkspace(&plane_workspace);
 	return 0;
 }
 

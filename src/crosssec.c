@@ -801,6 +801,18 @@ void CalcField(doublecomplex ebuff[static restrict 3], // where to write calcula
 
 //======================================================================================================================
 
+void CalcFieldBatch(doublecomplex * restrict fields, // 3 complex components for each direction
+	const double * restrict directions,               // packed xyz directions
+	const size_t count)                                // number of directions
+// calculate scattering amplitudes for a batch of directions; currently uses the scalar CPU implementation
+{
+	size_t i;
+
+	for (i=0;i<count;i++) CalcField(fields+3*i,directions+3*i);
+}
+
+//======================================================================================================================
+
 double ExtCross(const double * restrict incPol)
 // Calculate the Extinction cross-section
 {
