@@ -40,7 +40,7 @@
 cl_context context;
 cl_command_queue command_queue;
 cl_kernel clarith1,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clzero,clinprod,clnConj,cltransposeof,
-	cltransposeob,cltransposeofR;
+	cltransposeob,cltransposeofR,clfarfield_direct,clfarfield_projected;
 cl_mem bufXmatrix,bufmaterial,bufposition,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 
@@ -59,6 +59,7 @@ cl_mem bufRmatrix,bufslicesR,bufslicesR_tr; //for surface
 double *inprodhlp; // extra buffer (on CPU) for calculating inner product in MatVec
 // OpenCL memory counts (current, peak, and maximum for a single object)
 size_t oclMem,oclMemPeak,oclMemMaxObj;
+size_t oclFarFieldWG;
 // OpenCL memory available at device (total and for a single object); cl_ulong should be compatible with size_t
 cl_ulong oclMemDev,oclMemDevObj;
 int gpuInd; // index of GPU to use (starting from 0)
@@ -454,6 +455,29 @@ void oclinit(void)
 	CL_CH_ERR(err);
 	clinprod=clCreateKernel(program,"inpr",&err);
 	CL_CH_ERR(err);
+	clfarfield_direct=clCreateKernel(program,"far_field_direct",&err);
+	CL_CH_ERR(err);
+	clfarfield_projected=clCreateKernel(program,"far_field_projected",&err);
+	CL_CH_ERR(err);
+	/* Kernels use fixed local arrays for at most 128 work-items. Pick the largest supported power of two so their
+	 * reduction remains valid even on a device whose per-kernel limit is smaller.
+	 */
+	cl_uint max_work_item_dimensions;
+	size_t farfield_direct_max,farfield_projected_max,farfield_max,*max_work_item_sizes;
+	CL_CH_ERR(clGetKernelWorkGroupInfo(clfarfield_direct,device_id,CL_KERNEL_WORK_GROUP_SIZE,
+		sizeof(farfield_direct_max),&farfield_direct_max,NULL));
+	CL_CH_ERR(clGetKernelWorkGroupInfo(clfarfield_projected,device_id,CL_KERNEL_WORK_GROUP_SIZE,
+		sizeof(farfield_projected_max),&farfield_projected_max,NULL));
+	CL_CH_ERR(clGetDeviceInfo(device_id,CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS,sizeof(max_work_item_dimensions),
+		&max_work_item_dimensions,NULL));
+	MALLOC_VECTOR(max_work_item_sizes,sizet,max_work_item_dimensions,ALL);
+	CL_CH_ERR(clGetDeviceInfo(device_id,CL_DEVICE_MAX_WORK_ITEM_SIZES,
+		max_work_item_dimensions*sizeof(*max_work_item_sizes),max_work_item_sizes,NULL));
+	farfield_max=MIN((size_t)128,MIN(max_work_item_sizes[0],MIN(farfield_direct_max,farfield_projected_max)));
+	Free_general(max_work_item_sizes);
+	if (farfield_max==0) LogError(ALL_POS,"OpenCL device cannot execute the far-field kernels");
+	oclFarFieldWG=1;
+	while (oclFarFieldWG<=farfield_max/2) oclFarFieldWG*=2;
 	/* In principle a single kernel can be used for all transpose operations, including surface ones. However, this will
 	 * require setting the kernel arguments just before the execution. Thus, using multiple kernels seem to be a bit
 	 * faster.
@@ -542,6 +566,8 @@ void oclunload(void)
 	CL_CH_ERR(clReleaseKernel(clarith5));
 	CL_CH_ERR(clReleaseKernel(clnConj));
 	CL_CH_ERR(clReleaseKernel(clinprod));
+	CL_CH_ERR(clReleaseKernel(clfarfield_direct));
+	CL_CH_ERR(clReleaseKernel(clfarfield_projected));
 	CL_CH_ERR(clReleaseKernel(cltransposeof));
 	CL_CH_ERR(clReleaseKernel(cltransposeob));
 	if (surface) { // kernels for surface

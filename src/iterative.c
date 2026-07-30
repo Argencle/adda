@@ -80,6 +80,20 @@ static bool chp_exit;      // checkpoint occurred - exit
 static bool complete;      // complete iteration was performed (not stopped in the middle)
 	// whether matrix-vector product computed during initialization can be reused at first iteration
 static bool matvec_ready;
+#ifdef OCL_BLAS
+static bool bicg_ocl_host_vectors_ready;
+
+static void ReadBiCGOpenCLVectors(void)
+// synchronize the BiCG device vectors for subsequent host-side use
+{
+	CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufargvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,pvec,0,NULL,
+		NULL));
+	CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufrvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,rvec,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxvec,CL_TRUE,0,sizeof(doublecomplex)*local_nRows,xvec,0,NULL,NULL));
+	bicg_ocl_host_vectors_ready=true;
+}
+#endif
+
 typedef struct // data for checkpoints
 {
 	void *ptr; // pointer to the data
@@ -630,6 +644,7 @@ ITER_FUNC(BiCG_CS)
 				NULL,NULL));
 			CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufxvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,xvec,0,
 				NULL,NULL));
+			bicg_ocl_host_vectors_ready=false;
 #endif
 			return; // no specific initialization required (if not OCL_BLAS)
 		}
@@ -722,14 +737,7 @@ ITER_FUNC(BiCG_CS)
 			my_clReleaseBuffer(bufinprodRp1);
 			my_clReleaseBuffer(bufro_new);
 			my_clReleaseBuffer(bufmu);
-			if (inprodRp1<epsB){
-				CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufpvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,pvec,0,
-					NULL,NULL));
-				CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufrvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,rvec,0,
-					NULL,NULL));
-				CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxvec,CL_TRUE,0,sizeof(doublecomplex)*local_nRows,xvec,0,
-					NULL,NULL));
-			}
+			if (inprodRp1<epsB) ReadBiCGOpenCLVectors();
 #endif
 			// initialize ro_old -> ro_k-2 for next iteration
 			ro_old=ro_new;
@@ -1616,6 +1624,12 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		 */
 		ProgressReport();
 	}
+#ifdef OCL_BLAS
+	/* BiCG normally synchronizes when it reaches the residual threshold. It must also do so after an accepted maxiter
+	 * exit; otherwise host post-processing would use an older solution while GPU far-field code sees the current one.
+	 */
+	if (method_in==IT_BICG_CS && !bicg_ocl_host_vectors_ready) ReadBiCGOpenCLVectors();
+#endif
 	// Save checkpoint of type always
 	if (chp_type==CHP_ALWAYS && !chp_exit) SaveIterChpoint();
 	/* process incomplete convergence

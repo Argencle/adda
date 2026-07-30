@@ -23,6 +23,9 @@
 #include "io.h"
 #include "memory.h"
 #include "linalg.h" // for nMult_mat
+#ifdef OPENCL
+#	include "ocl_farfield.h"
+#endif
 #include "Romberg.h"
 #include "timing.h"
 #include "vars.h"
@@ -919,6 +922,9 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 
 	if (yzplane || scat_plane) InitPlaneFieldWorkspace(&plane_workspace);
 
+#ifdef OPENCL
+	if (!surface) PrepareOpenCLFarField(pvec);
+#endif
 	if (yzplane) CalcEplaneYZ(which,type,&plane_workspace);     // generally plane of incPolY and prop
 	if (scat_plane) CalcScatPlane(which,type,&plane_workspace); // the scattering plane through ez,prop,incPolX - xz by default
 	// Calculate the scattered field for the whole solid-angle

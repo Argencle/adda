@@ -88,7 +88,7 @@ else
 endif
 CFLAGS  += -DOPENCL 
 
-CSOURCE += oclcore.c oclmatvec.c
+CSOURCE += oclcore.c oclmatvec.c ocl_farfield.c
 
 ifneq ($(filter OCL_READ_SOURCE_RUNTIME,$(OPTIONS)),)
   CFLAGS += -DOCL_READ_SOURCE_RUNTIME

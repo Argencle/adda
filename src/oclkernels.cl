@@ -58,6 +58,14 @@ void cMult2(__constant double2 *a,__global const double2 *b,double2 *c)
 
 //======================================================================================================================
 
+double2 cMultValue(const double2 a,const double2 b)
+// complex multiplication of two values
+{
+	return (double2)(a.s0*b.s0-a.s1*b.s1,a.s1*b.s0+a.s0*b.s1);
+}
+
+//======================================================================================================================
+
 double cvNorm2(__global const double2 *a)
 // square of the norm of a complex vector[3]
 {
@@ -83,6 +91,106 @@ __kernel void clzero(__global double2 *input)
 
 	input[id] = 0.0;
 }
+
+//======================================================================================================================
+
+/* Maximum work-items cooperating on one observation direction. The host may select a smaller power of two according to
+ * the device and kernel limits; this constant only fixes the size of the local reduction arrays.
+ */
+#define FAR_FIELD_MAX_WG 128
+
+__kernel void far_field_direct(__global const double2 *polarization,const in_sizet polarization_offset,
+	__global const ushort *position,__global const double2 *phases,__global double2 *result,
+	const in_sizet dipole_count,const in_sizet phase_stride,const in_sizet box_x,const in_sizet box_y)
+/* Calculate one free-space Fourier sum per work-group. Phase tables use the same recurrence as the CPU implementation,
+ * so the kernel only performs complex multiplications and a parallel reduction.
+ */
+{
+	const size_t direction=get_group_id(0);
+	const size_t lid=get_local_id(0);
+	const size_t local_size=get_local_size(0);
+	const size_t phase_base=direction*phase_stride;
+	double2 sum0=(double2)(0.0,0.0);
+	double2 sum1=(double2)(0.0,0.0);
+	double2 sum2=(double2)(0.0,0.0);
+	__local double2 partial[3*FAR_FIELD_MAX_WG];
+
+	for (size_t dipole=lid;dipole<dipole_count;dipole+=local_size) {
+		const size_t j=3*dipole;
+		const size_t x=position[j];
+		const size_t y=position[j+1];
+		const size_t z=position[j+2];
+		double2 phase=cMultValue(phases[phase_base+box_x+y],phases[phase_base+box_x+box_y+z]);
+
+		phase=cMultValue(phase,phases[phase_base+x]);
+		sum0+=cMultValue(polarization[polarization_offset+j],phase);
+		sum1+=cMultValue(polarization[polarization_offset+j+1],phase);
+		sum2+=cMultValue(polarization[polarization_offset+j+2],phase);
+	}
+	partial[lid]=sum0;
+	partial[local_size+lid]=sum1;
+	partial[2*local_size+lid]=sum2;
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for (size_t offset=local_size/2;offset>0;offset/=2) {
+		if (lid<offset) {
+			partial[lid]+=partial[lid+offset];
+			partial[local_size+lid]+=partial[local_size+lid+offset];
+			partial[2*local_size+lid]+=partial[2*local_size+lid+offset];
+		}
+		barrier(CLK_LOCAL_MEM_FENCE);
+	}
+	if (lid==0) {
+		result[3*direction]=partial[0];
+		result[3*direction+1]=partial[local_size];
+		result[3*direction+2]=partial[2*local_size];
+	}
+}
+
+//======================================================================================================================
+
+__kernel void far_field_projected(__global const double2 *projected,__global const double2 *phases,
+	__global double2 *result,const in_sizet plane_size,const in_sizet phase_stride,const in_sizet fast_size)
+// Evaluate one dense projected 2D polarization grid per work-group.
+{
+	const size_t direction=get_group_id(0);
+	const size_t lid=get_local_id(0);
+	const size_t local_size=get_local_size(0);
+	const size_t phase_base=direction*phase_stride;
+	double2 sum0=(double2)(0.0,0.0);
+	double2 sum1=(double2)(0.0,0.0);
+	double2 sum2=(double2)(0.0,0.0);
+	__local double2 partial[3*FAR_FIELD_MAX_WG];
+
+	for (size_t cell=lid;cell<plane_size;cell+=local_size) {
+		const size_t fast=cell%fast_size;
+		const size_t slow=cell/fast_size;
+		const size_t j=3*cell;
+		const double2 phase=cMultValue(phases[phase_base+fast],phases[phase_base+fast_size+slow]);
+
+		sum0+=cMultValue(projected[j],phase);
+		sum1+=cMultValue(projected[j+1],phase);
+		sum2+=cMultValue(projected[j+2],phase);
+	}
+	partial[lid]=sum0;
+	partial[local_size+lid]=sum1;
+	partial[2*local_size+lid]=sum2;
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for (size_t offset=local_size/2;offset>0;offset/=2) {
+		if (lid<offset) {
+			partial[lid]+=partial[lid+offset];
+			partial[local_size+lid]+=partial[local_size+lid+offset];
+			partial[2*local_size+lid]+=partial[2*local_size+lid+offset];
+		}
+		barrier(CLK_LOCAL_MEM_FENCE);
+	}
+	if (lid==0) {
+		result[3*direction]=partial[0];
+		result[3*direction+1]=partial[local_size];
+		result[3*direction+2]=partial[2*local_size];
+	}
+}
+
+#undef FAR_FIELD_MAX_WG
 
 //======================================================================================================================
 
