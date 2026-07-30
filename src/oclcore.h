@@ -41,7 +41,7 @@ extern bool bufupload;
 extern cl_command_queue command_queue;
 extern cl_kernel clzero,clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,
 	clarith5_standard,
-	clnConj,clinprod,cltransposeof,cltransposeob,cltransposeofR;
+	clnConj,clinprod,cltransposeof,cltransposeob,cltransposeofR,clfarfield_direct,clfarfield_projected;
 extern cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 #ifdef OCL_BLAS
@@ -51,6 +51,7 @@ extern cl_mem buftmp,bufrvec,bufxvec,bufvpr,bufvtmp,bufvnext,bufpArray,bufxArray
 extern cl_mem bufRmatrix,bufslicesR,bufslicesR_tr;
 extern double *inprodhlp;
 extern size_t oclMem,oclMemPeak,oclMemMaxObj;
+extern size_t oclFarFieldWG;
 extern cl_ulong oclMemDev,oclMemDevObj;
 extern int gpuInd;
 

@@ -23,6 +23,9 @@
 #include "io.h"
 #include "memory.h"
 #include "linalg.h" // for nMult_mat
+#ifdef OPENCL
+#	include "ocl_farfield.h"
+#endif
 #include "Romberg.h"
 #include "timing.h"
 #include "vars.h"
@@ -997,6 +1000,9 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 	if (yzplane || scat_plane) InitPlaneFieldWorkspace(&plane_workspace);
 
 	if (IterMethod!=IT_SHIFTED_BICG_CS) {
+#ifdef OPENCL
+		if (!surface) PrepareOpenCLFarField(pvec,-1);
+#endif
 		if (yzplane) CalcEplaneYZ(which,type,&plane_workspace);     // generally plane of incPolY and prop
 		if (scat_plane) CalcScatPlane(which,type,&plane_workspace); // scattering plane - xz by default
 		// Calculate the scattered field for the whole solid-angle
@@ -1015,6 +1021,9 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 			BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
 			directory=shifted_dir; // change the folder
 			nCopy(pvec,xArray[i]); // copy polarization to pvec for each refractive index
+#ifdef OPENCL
+			if (!surface) PrepareOpenCLFarField(pvec,i);
+#endif
 			if (yzplane) CalcEplaneYZ(which,type,&plane_workspace);     // generally plane of incPolY and prop
 			if (scat_plane) CalcScatPlane(which,type,&plane_workspace); // scattering plane - xz by default
 			// Calculate the scattered field for the whole solid-angle

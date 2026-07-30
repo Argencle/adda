@@ -21,6 +21,9 @@
 #include "debug.h"
 #include "io.h"
 #include "memory.h"
+#ifdef OPENCL
+#	include "ocl_farfield.h"
+#endif
 #include "Romberg.h"
 #include "timing.h"
 #include "vars.h"
@@ -36,6 +39,7 @@
 // defined and initialized in calculator.c
 extern doublecomplex * restrict E_ad;
 extern double * restrict E2_alldir;
+extern doublecomplex * restrict Avecbuffer;
 extern doublecomplex cc[MAX_NMAT][3];
 #ifndef SPARSE
 extern doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ;
@@ -669,7 +673,7 @@ static void ProjectPolarization(doublecomplex * restrict projected,const int zer
 //======================================================================================================================
 
 static void CalcFieldFreeProjectedBatch(doublecomplex * restrict fields,const double * restrict directions,
-	const size_t count,const int zero_axis,const size_t plane_size,doublecomplex * restrict projected)
+	const size_t count,const int zero_axis,doublecomplex * restrict projected)
 /* Calculate a free-space batch after summing the polarization along the grid axis absent from all directions. If
  * n[zero_axis]=0, the phase is independent of that coordinate, so the 3D sum can be factored into a projection followed
  * by a 2D sum. The latter is evaluated as two successive 1D sums to save one complex multiplication per grid cell.
@@ -682,7 +686,6 @@ static void CalcFieldFreeProjectedBatch(doublecomplex * restrict fields,const do
 	double kd_fast,kd_slow;
 	int component,fast,slow,fast_axis,slow_axis,fast_size,slow_size;
 
-	ProjectPolarization(projected,zero_axis,plane_size);
 	switch (zero_axis) {
 		case 0: // yz plane: y is the contiguous dimension in projected
 			fast_axis=1;
@@ -734,6 +737,23 @@ static void CalcFieldFreeProjectedBatch(doublecomplex * restrict fields,const do
 }
 
 #endif // !SPARSE
+
+//======================================================================================================================
+
+#ifdef OPENCL
+
+static void FinalizeFieldFreeBatch(doublecomplex * restrict fields,const double * restrict directions,const size_t count)
+// transform raw Fourier sums returned by OpenCL into the same amplitudes as CalcFieldFree
+{
+	size_t i;
+
+	for (i=0;i<count;i++) {
+		const doublecomplex sum[3]={fields[3*i],fields[3*i+1],fields[3*i+2]};
+		FinalizeFieldFree(fields+3*i,directions+3*i,sum);
+	}
+}
+
+#endif
 
 //======================================================================================================================
 
@@ -963,9 +983,22 @@ void CalcFieldBatch(doublecomplex * restrict fields, // 3 complex components for
 	if (!surface && (zero_axis=FindZeroAxis(directions,count,scratch_size,&plane_size))!=UNDEF) {
 		D("Using 2D polarization projection along axis %d: %zu dipoles -> %zu cells",zero_axis,
 			local_nvoid_Ndip,plane_size);
-		CalcFieldFreeProjectedBatch(fields,directions,count,zero_axis,plane_size,scratch);
+		ProjectPolarization(scratch,zero_axis,plane_size);
+#ifdef OPENCL
+		if (CalcOpenCLFarFieldProjected(fields,directions,count,scratch,plane_size,zero_axis)) {
+			FinalizeFieldFreeBatch(fields,directions,count);
+			return;
+		}
+#endif
+		CalcFieldFreeProjectedBatch(fields,directions,count,zero_axis,scratch);
 		return;
 	}
+#ifdef OPENCL
+	if (!surface && CalcOpenCLFarFieldDirect(fields,directions,count)) {
+		FinalizeFieldFreeBatch(fields,directions,count);
+		return;
+	}
+#endif
 #else
 	(void)scratch;
 	(void)scratch_size;
@@ -1138,20 +1171,45 @@ void SetScatPlane(const double ct,const double st,const double phi,double robs[s
 }
 //======================================================================================================================
 
+/* Number of observation directions staged on the host before calling CalcFieldBatch. This limits stack usage and the
+ * number of host/device synchronizations; it is independent of the number of work-items in an OpenCL work-group.
+ */
+#define SCAT_FIELD_BATCH_SIZE 128
+
+static void FlushScatFieldBatch(doublecomplex * restrict output,const double * restrict directions,
+	const double * restrict pol_per,const double * restrict pol_par,doublecomplex * restrict fields,
+	const size_t first,const size_t count,const size_t total)
+// calculate and store one block of arbitrary scattering directions
+{
+	size_t i,point;
+
+	CalcFieldBatch(fields,directions,count,Avecbuffer,local_nRows);
+	for (i=0;i<count;i++) {
+		point=first+i;
+		output[2*point]=crDotProd(fields+3*i,pol_per+3*i);
+		output[2*point+1]=crDotProd(fields+3*i,pol_par+3*i);
+		// show progress; total is nonzero whenever this helper is called
+		if (((10*(point+1))%total)<10 && IFROOT) PRINTFB(" %d%%",(int)(100*(point+1)/total));
+	}
+}
+
+//======================================================================================================================
+
 void CalcAlldir(void)
 // calculate scattered field in many directions
 {
-	int index,npoints,point;
-	size_t i,j;
+	size_t batch=0,first=0,i,j,npoints,point;
 	TIME_TYPE tstart;
-	double robserver[3],incPolpar[3],incPolper[3],cthet,sthet,th,ph;
-	doublecomplex ebuff[3];
+	double directions[3*SCAT_FIELD_BATCH_SIZE],pol_per[3*SCAT_FIELD_BATCH_SIZE],
+		pol_par[3*SCAT_FIELD_BATCH_SIZE];
+	double cthet,sthet,th,ph;
+	doublecomplex fields[3*SCAT_FIELD_BATCH_SIZE];
 
 	// Calculate field
 	tstart = GET_TIME();
 	npoints = theta_int.N*phi_int.N;
 	if (IFROOT) PRINTFB("Calculating scattered field for the whole solid angle:\n");
-	for (i=0,point=0;i<theta_int.N;++i) {
+	for (i=0;i<theta_int.N;++i) {
 		th=Deg2Rad(theta_int.val[i]);
 		cthet=cos(th);
 		sthet=sin(th);
@@ -1161,25 +1219,18 @@ void CalcAlldir(void)
 			 * irrelevant, since we are interested only in |E|^2. But projecting the vector on two axes helps to
 			 * somewhat decrease communication time. We also may need these components in the future.
 			 */
-			SetScatPlane(cthet,sthet,ph,robserver,incPolper);
+			SetScatPlane(cthet,sthet,ph,directions+3*batch,pol_per+3*batch);
 			// set unit vector for Epar
-			CrossProd(robserver,incPolper,incPolpar);
-			// calculate scattered field - main bottleneck
-			CalcField(ebuff,robserver);
-			/* Set Epar and Eper - use separate E_ad array to store them (to decrease communications in 1.5 times).
-			 * Writing a special case for sequential mode can eliminate the need of E_ad altogether. Moreover,
-			 * E2_alldir can be stored in 1/4 of memory allocated for E_ad. However, we do not do it, because it doesn't
-			 * seem so significant. And, more importantly, complex fields may also be useful in the future, e.g.
-			 * for radiation force calculation through integration of the far-field
-			 */
-			index=2*point;
-			E_ad[index]=crDotProd(ebuff,incPolper);
-			E_ad[index+1]=crDotProd(ebuff,incPolpar);
-			point++;
-			// show progress
-			if (((10*point)%npoints)<10 && IFROOT) PRINTFB(" %d%%",100*point/npoints);
+			CrossProd(directions+3*batch,pol_per+3*batch,pol_par+3*batch);
+			batch++;
+			if (batch==SCAT_FIELD_BATCH_SIZE) {
+				FlushScatFieldBatch(E_ad,directions,pol_per,pol_par,fields,first,batch,npoints);
+				first+=batch;
+				batch=0;
+			}
 		}
 	}
+	if (batch!=0) FlushScatFieldBatch(E_ad,directions,pol_per,pol_par,fields,first,batch,npoints);
 	// accumulate fields
 	Accumulate(E_ad,cmplx_type,2*npoints,&Timing_EFieldADComm);
 	// calculate square of the field
@@ -1205,10 +1256,12 @@ void CalcAlldir(void)
 void CalcScatGrid(const enum incpol which)
 // calculate scattered field in many directions
 {
-	size_t i,j,n,point,index;
+	size_t batch=0,first=0,i,j,n;
 	TIME_TYPE tstart;
-	double robserver[3],incPolpar[3],incPolper[3],cthet,sthet,th,ph;
-	doublecomplex ebuff[3];
+	double directions[3*SCAT_FIELD_BATCH_SIZE],pol_per[3*SCAT_FIELD_BATCH_SIZE],
+		pol_par[3*SCAT_FIELD_BATCH_SIZE];
+	double cthet,sthet,th,ph;
+	doublecomplex fields[3*SCAT_FIELD_BATCH_SIZE];
 	doublecomplex *Egrid; // either EgridX or EgridY
 
 	// Calculate field
@@ -1221,7 +1274,7 @@ void CalcScatGrid(const enum incpol which)
 	else n=1; // angles.type==SG_PAIRS
 	if (IFROOT) PRINTFB("Calculating grid of scattered field:\n");
 	// main cycle
-	for (i=0,point=0;i<angles.theta.N;++i) {
+	for (i=0;i<angles.theta.N;++i) {
 		th=Deg2Rad(angles.theta.val[i]);
 		cthet=cos(th);
 		sthet=sin(th);
@@ -1229,20 +1282,18 @@ void CalcScatGrid(const enum incpol which)
 			if (angles.type==SG_GRID) ph=Deg2Rad(angles.phi.val[j]);
 			else ph=Deg2Rad(angles.phi.val[i]); // angles.type==SG_PAIRS
 			// set robserver and unit vector for Eper (determines scattering plane)
-			SetScatPlane(cthet,sthet,ph,robserver,incPolper);
+			SetScatPlane(cthet,sthet,ph,directions+3*batch,pol_per+3*batch);
 			// set unit vector for Epar
-			CrossProd(robserver,incPolper,incPolpar);
-			// calculate scattered field - main bottleneck
-			CalcField(ebuff,robserver);
-			// set Epar and Eper - use Egrid array to store them (to decrease communications in 1.5 times)
-			index=2*point;
-			Egrid[index]=crDotProd(ebuff,incPolper);
-			Egrid[index+1]=crDotProd(ebuff,incPolpar);
-			point++;
-			// show progress; the value is always from 0 to 100, so conversion to int is safe
-			if (((10*point)%angles.N)<10 && IFROOT) PRINTFB(" %d%%",(int)(100*point/angles.N));
+			CrossProd(directions+3*batch,pol_per+3*batch,pol_par+3*batch);
+			batch++;
+			if (batch==SCAT_FIELD_BATCH_SIZE) {
+				FlushScatFieldBatch(Egrid,directions,pol_per,pol_par,fields,first,batch,angles.N);
+				first+=batch;
+				batch=0;
+			}
 		}
 	}
+	if (batch!=0) FlushScatFieldBatch(Egrid,directions,pol_per,pol_par,fields,first,batch,angles.N);
 	// accumulate fields; timing
 	Accumulate(Egrid,cmplx_type,2*angles.N,&Timing_EFieldSGComm);
 	if (IFROOT) PRINTFB("  done\n");
