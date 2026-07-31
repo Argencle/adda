@@ -86,6 +86,70 @@ __kernel void clzero(__global double2 *input)
 
 //======================================================================================================================
 
+__kernel void dmatrix_green_point(__global double2 *Dmatrix,const in_sizet gridX,const in_sizet D2sizeY,
+	const in_sizet D2sizeZ,const in_sizet boxX,const in_sizet boxY,const in_sizet boxZ,const double dsX,
+	const double dsY,const double dsZ,const double wave_num,const uchar reduced_FFT)
+/* Generate the raw point-dipole Green tensor directly in the interleaved layout consumed by dmatrix_pack_x.
+ * Padding and the singular origin are explicitly zeroed. Negative coordinates occupy the upper half of each full
+ * periodic dimension, while reduced y and z dimensions contain only their non-negative halves.
+ */
+{
+	size_t index=get_global_id(0);
+	const size_t x=index%gridX;
+	index/=gridX;
+	const size_t y=index%D2sizeY;
+	const size_t z=index/D2sizeY;
+	const size_t destination=6*get_global_id(0);
+	bool valid=true;
+	double rx=0.0,ry=0.0,rz=0.0;
+
+	if (x<boxX) rx=(double)x*dsX;
+	else if (x>gridX-boxX) rx=-(double)(gridX-x)*dsX;
+	else valid=false;
+
+	if (reduced_FFT) {
+		if (y<boxY) ry=(double)y*dsY;
+		else valid=false;
+		if (z<boxZ) rz=(double)z*dsZ;
+		else valid=false;
+	}
+	else {
+		if (y<boxY) ry=(double)y*dsY;
+		else if (y>D2sizeY-boxY) ry=-(double)(D2sizeY-y)*dsY;
+		else valid=false;
+		if (z<boxZ) rz=(double)z*dsZ;
+		else if (z>D2sizeZ-boxZ) rz=-(double)(D2sizeZ-z)*dsZ;
+		else valid=false;
+	}
+
+	if (!valid || (x==0 && y==0 && z==0)) {
+		for (uchar component=0;component<6;component++)
+			Dmatrix[destination+component]=(double2)(0.0,0.0);
+		return;
+	}
+
+	const double rr=sqrt(rx*rx+ry*ry+rz*rz);
+	const double invr=1.0/rr;
+	const double invr3=invr*invr*invr;
+	const double ux=rx*invr,uy=ry*invr,uz=rz*invr;
+	const double qxx=ux*ux,qxy=ux*uy,qxz=ux*uz,qyy=uy*uy,qyz=uy*uz,qzz=uz*uz;
+	const double kr=wave_num*rr,kr2=kr*kr;
+	const double t1=3.0-kr2,t2=-3.0*kr,t3=kr2-1.0;
+	double cos_kr;
+	const double sin_kr=sincos(kr,&cos_kr);
+	const double2 expval=invr3*(double2)(cos_kr,sin_kr);
+	const double2 nondiag=(double2)(t1,t2);
+
+	Dmatrix[destination]  =cMultValue((double2)(t1*qxx+t3,kr+t2*qxx),expval);
+	Dmatrix[destination+1]=cMultValue(qxy*nondiag,expval);
+	Dmatrix[destination+2]=cMultValue(qxz*nondiag,expval);
+	Dmatrix[destination+3]=cMultValue((double2)(t1*qyy+t3,kr+t2*qyy),expval);
+	Dmatrix[destination+4]=cMultValue(qyz*nondiag,expval);
+	Dmatrix[destination+5]=cMultValue((double2)(t1*qzz+t3,kr+t2*qzz),expval);
+}
+
+//======================================================================================================================
+
 __kernel void dmatrix_pack_x(__global const double2 *Dmatrix,__global double2 *Xmatrix,
 	const in_sizet cell_count,const in_sizet source_offset,const in_sizet destination_offset,
 	const in_sizet source_stride,const uchar component_base,const uchar component_count,const uchar component_stride)
