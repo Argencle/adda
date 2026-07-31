@@ -891,6 +891,49 @@ static void fftDestroyDPlans(const bool gpu_dmatrix ONLY_FOR_FFTW3)
 //======================================================================================================================
 
 #if defined(OPENCL) && defined(CLFFT)
+#ifdef PRECISE_TIMING
+static double DmatrixOpenCLEventDuration(const cl_event event)
+// return the execution time of a completed D-matrix initialization command and release its event
+{
+	cl_int status;
+	cl_ulong start,end;
+
+	if (event==NULL) LogError(ALL_POS,"OpenCL did not return the D-matrix Green-function profiling event");
+	CL_CH_ERR(clGetEventInfo(event,CL_EVENT_COMMAND_EXECUTION_STATUS,sizeof(status),&status,NULL));
+	if (status!=CL_COMPLETE) LogError(ALL_POS,"D-matrix Green-function profiling event is not complete");
+	CL_CH_ERR(clGetEventProfilingInfo(event,CL_PROFILING_COMMAND_START,sizeof(start),&start,NULL));
+	CL_CH_ERR(clGetEventProfilingInfo(event,CL_PROFILING_COMMAND_END,sizeof(end),&end,NULL));
+	if (end<start) LogError(ALL_POS,"Invalid timestamps for the D-matrix Green-function profiling event");
+	CL_CH_ERR(clReleaseEvent(event));
+	return (double)(end-start)*1E-9;
+}
+#endif
+
+//======================================================================================================================
+
+static void GenerateDmatrixPointOpenCL(const size_t cell_count,cl_event *const event)
+// enqueue point-dipole Green-tensor generation in the raw interleaved D-matrix layout
+{
+	const size_t boxX_size=boxX,boxY_size=boxY,boxZ_size=boxZ,D2sizeZ=lz_Dm;
+	const cl_uchar reduced_arg=reduced_FFT;
+
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,0,sizeof(cl_mem),&bufDmatrix));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,1,sizeof(size_t),&gridX));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,2,sizeof(size_t),&D2sizeY));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,3,sizeof(size_t),&D2sizeZ));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,4,sizeof(size_t),&boxX_size));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,5,sizeof(size_t),&boxY_size));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,6,sizeof(size_t),&boxZ_size));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,7,sizeof(double),&dsX));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,8,sizeof(double),&dsY));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,9,sizeof(double),&dsZ));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,10,sizeof(double),&WaveNum));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_green_point,11,sizeof(cl_uchar),&reduced_arg));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,cldmatrix_green_point,1,NULL,&cell_count,NULL,0,NULL,event));
+}
+
+//======================================================================================================================
+
 static void fftZ_DmatrixOpenCL(void)
 // forward Z transforms of the main slice buffer only (the surface buffer is not initialized yet)
 {
@@ -999,15 +1042,18 @@ static void TransformDmatrixYZ(cl_mem source,const cl_uchar component_base,const
 
 //======================================================================================================================
 
-static void TransformDmatrixOpenCL(const size_t Dsize,const double invNgrid)
+static void TransformDmatrixOpenCL(const size_t Dsize,const double invNgrid,const bool upload_raw)
 /* Transform the raw, interleaved Green tensor entirely on the GPU. Reduced FFT processes three components at once
  * without extra storage. Full FFT uses a temporary one-component grid so the permanent x-major D layout is preserved.
+ * The raw tensor can either be uploaded from the host or be produced by a preceding command on the same in-order queue.
  */
 {
 	const double scale=-invNgrid;
 
-	// Keep host storage alive until the final clFinish: the upload is deliberately non-blocking.
-	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufDmatrix,CL_FALSE,0,Dsize*sizeof(*Dmatrix),Dmatrix,0,NULL,NULL));
+	if (upload_raw) {
+		// Keep host storage alive until the final clFinish: the upload is deliberately non-blocking.
+		CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufDmatrix,CL_FALSE,0,Dsize*sizeof(*Dmatrix),Dmatrix,0,NULL,NULL));
+	}
 	if (reduced_FFT) {
 		for (cl_uchar component_base=0;component_base<NDCOMP;component_base+=3) {
 			PackDmatrixX(local_Nsmall,0,0,0,component_base,3,1);
@@ -1151,8 +1197,10 @@ void InitDmatrix(void)
 	TIME_TYPE start,time1,early_fft_init=0;
 #if defined(OPENCL) && defined(CLFFT)
 	const bool gpu_dmatrix=true;
+	const bool gpu_point_green=IntRelation==G_POINT_DIP;
 #else
 	const bool gpu_dmatrix=false;
+	const bool gpu_point_green=false;
 #endif
 #ifdef PRECISE_TIMING
 	// precise timing of the Dmatrix computation
@@ -1160,7 +1208,10 @@ void InitDmatrix(void)
 	SYSTEM_TIME Timing_fftX,Timing_fftY,Timing_fftZ,Timing_Gcalc,Timing_ar1,Timing_ar2,Timing_ar3,Timing_BT,Timing_TYZ,
 		Timing_beg,Timing_InitMV,Timing_DmGPU;
 	double t_fftX,t_fftY,t_fftZ,t_ar1,t_ar2,t_ar3,t_TYZ,t_beg,t_Gcalc,t_Arithm,t_FFT,t_BT,t_InitMV,t_Rm,t_Tot,
-		t_DmGPU;
+		t_DmGPU,t_GcalcGPU=0;
+#	if defined(OPENCL) && defined(CLFFT)
+	cl_event green_event=NULL;
+#	endif
 
 	// This should be the first occurrence of PRECISE_TIMING in the program
 	SetTimerFreq();
@@ -1438,12 +1489,14 @@ void InitDmatrix(void)
 	// memory estimation and exit for prognosis
 	MAXIMIZE(memPeak,memory);
 	if (gpu_dmatrix) {
-		/* Dmatrix is uploaded and freed before Rmatrix is built. Surface calculations still need the two host slices and
-		 * R2matrix, but the temporary D2matrix is entirely eliminated.
+		/* Point-dipole Green values are generated directly in bufDmatrix and require no host Dmatrix. Other interaction
+		 * formulations are uploaded and freed before Rmatrix is built. Surface calculations still need the two host
+		 * slices and R2matrix, but the temporary D2matrix is entirely eliminated.
 		 */
+		const double host_Dsize=gpu_point_green ? 0 : (double)Dsize;
 		if (surface)
-			memPeak+=sizeof(doublecomplex)*(2*(double)gridYZ+R2sizeTot+MAX((double)Dsize,(double)Rsize));
-		else memPeak+=sizeof(doublecomplex)*(double)Dsize;
+			memPeak+=sizeof(doublecomplex)*(2*(double)gridYZ+R2sizeTot+MAX(host_Dsize,(double)Rsize));
+		else memPeak+=sizeof(doublecomplex)*host_Dsize;
 	}
 	else {
 		/* objects allocated for the host transform: Dmatrix,D2matrix,slice,slice_tr. For surface, the peak is either by
@@ -1475,7 +1528,7 @@ void InitDmatrix(void)
 #endif
 	if (prognosis) return;
 	// allocate memory for Dmatrix
-	MALLOC_VECTOR(Dmatrix,complex,Dsize,ALL);
+	if (!gpu_point_green) MALLOC_VECTOR(Dmatrix,complex,Dsize,ALL);
 	if (!gpu_dmatrix) // allocate memory for the host Dmatrix transform
 		MALLOC_VECTOR(D2matrix,complex,D2sizeTot,ALL);
 	if (!gpu_dmatrix || surface) {
@@ -1509,29 +1562,53 @@ void InitDmatrix(void)
 	GET_SYSTEM_TIME(tvp+1);
 	Elapsed(tvp,tvp+1,&Timing_beg); // it includes a lot of OpenCL stuff
 #endif
-	if (IFROOT) PRINTFB("Calculating Green's function (Dmatrix)\n");
-	/* Interaction matrix values are calculated all at once for performance reasons. They are stored in Dmatrix with
-	 * indexing corresponding to D2matrix (to facilitate copying) but NDCOMP elements instead of one. Afterwards they
-	 * are replaced by Fourier transforms (with different indexing) component-wise (in cycle over NDCOMP)
-	 */
-	/* fill Dmatrix with 0, this if to fill the possible gap between e.g. boxY and gridY/2; (and for R=0) probably
-	 * faster than using a lot of conditionals
-	 */
-	for (ind=0;ind<Dsize;ind++) Dmatrix[ind]=0;
-	// fill Dmatrix with values of Green's tensor
-	for(k=nnn*local_z0;k<nnn*local_z1;k++) {
-		// correction of k is relevant only if reduced_FFT is not used
-		if (k>(int)smallZ) kcor=k-gridZ;
-		else kcor=k;
-		for (j=jstart;j<boxY;j++) for (i=1-boxX;i<boxX;i++) {
-			index=NDCOMP*Index2matrix(i,j,k-nnn*local_z0,D2sizeY);
-			/* The test for zero distance is somewhat non-optimal. However, other alternatives are not perfect either:
-			 * 1) complicate the loops to remove the zero element in the beginning (move tests to the upper level)
-			 * 2) call the function with zero - it will produce NaN. Then set this element to zero after the loop.
-			 */
-			if (i!=0 || j!=0 || kcor!=0) (*InterTerm_int)(i,j,kcor,Dmatrix+index);
+	if (IFROOT) {
+		if (gpu_point_green) {
+			PRINTFB("Calculating Green's function (Dmatrix) on the OpenCL device\n");
 		}
-	} // end of i,j,k loop
+		else {
+			PRINTFB("Calculating Green's function (Dmatrix)\n");
+		}
+	}
+#if defined(OPENCL) && defined(CLFFT)
+	if (gpu_point_green) {
+#	ifdef PRECISE_TIMING
+		GET_SYSTEM_TIME(tvp+15);
+		GenerateDmatrixPointOpenCL(D2sizeTot,&green_event);
+#	else
+		GenerateDmatrixPointOpenCL(D2sizeTot,NULL);
+#	endif
+	}
+	else
+#endif
+	{
+		/* Interaction matrix values are calculated all at once for performance reasons. They are stored in Dmatrix with
+		 * indexing corresponding to D2matrix (to facilitate copying) but NDCOMP elements instead of one. Afterwards they
+		 * are replaced by Fourier transforms (with different indexing) component-wise (in cycle over NDCOMP)
+		 */
+		/* fill Dmatrix with 0, this if to fill the possible gap between e.g. boxY and gridY/2; (and for R=0) probably
+		 * faster than using a lot of conditionals
+		 */
+		for (ind=0;ind<Dsize;ind++) Dmatrix[ind]=0;
+		// fill Dmatrix with values of Green's tensor
+		for(k=nnn*local_z0;k<nnn*local_z1;k++) {
+			// correction of k is relevant only if reduced_FFT is not used
+			if (k>(int)smallZ) kcor=k-gridZ;
+			else kcor=k;
+			for (j=jstart;j<boxY;j++) for (i=1-boxX;i<boxX;i++) {
+				index=NDCOMP*Index2matrix(i,j,k-nnn*local_z0,D2sizeY);
+				/* The test for zero distance is somewhat non-optimal. However, other alternatives are not perfect either:
+				 * 1) complicate the loops to remove the zero element in the beginning (move tests to the upper level)
+				 * 2) call the function with zero - it will produce NaN. Then set this element to zero after the loop.
+				 */
+				if (i!=0 || j!=0 || kcor!=0) (*InterTerm_int)(i,j,kcor,Dmatrix+index);
+			}
+		} // end of i,j,k loop
+#ifdef PRECISE_TIMING
+		GET_SYSTEM_TIME(tvp+11); // same as the last time-stamp in the host transform loop below
+		Elapsed(tvp+1,tvp+11,&Timing_Gcalc);
+#endif
+	}
 	if (IFROOT) {
 		if (gpu_dmatrix) {
 			PRINTFB("Fourier transform of Dmatrix on the OpenCL device\n");
@@ -1540,19 +1617,16 @@ void InitDmatrix(void)
 			PRINTFB("Fourier transform of Dmatrix\n");
 		}
 	}
-#ifdef PRECISE_TIMING
-	GET_SYSTEM_TIME(tvp+11); // same as the last time-stamp in the following loop
-	Elapsed(tvp+1,tvp+11,&Timing_Gcalc);
-#endif
 #if defined(OPENCL) && defined(CLFFT)
 	if (gpu_dmatrix) {
 #	ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+15);
+		if (!gpu_point_green) GET_SYSTEM_TIME(tvp+15);
 #	endif
-		TransformDmatrixOpenCL(Dsize,invNgrid);
+		TransformDmatrixOpenCL(Dsize,invNgrid,!gpu_point_green);
 #	ifdef PRECISE_TIMING
 		GET_SYSTEM_TIME(tvp+11);
 		Elapsed(tvp+15,tvp+11,&Timing_DmGPU);
+		if (gpu_point_green) t_GcalcGPU=DmatrixOpenCLEventDuration(green_event);
 #	endif
 	}
 	else
@@ -1646,7 +1720,7 @@ void InitDmatrix(void)
 #ifdef OPENCL
 	if (!gpu_dmatrix) // fallback path: copy the host-transformed Dmatrix to the device
 		CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufDmatrix,CL_TRUE,0,Dsize*sizeof(*Dmatrix),Dmatrix,0,NULL,NULL));
-	Free_cVector(Dmatrix);
+	if (!gpu_point_green) Free_cVector(Dmatrix);
 #	ifdef CLFFT
 	if (!reduced_FFT) my_clReleaseBuffer(bufDmatrixWork);
 #	endif
@@ -1693,7 +1767,7 @@ void InitDmatrix(void)
 	t_InitMV=TimerToSec(&Timing_InitMV);
 	// analyze and print precise timing information
 	t_beg=TimerToSec(&Timing_beg);
-	t_Gcalc=TimerToSec(&Timing_Gcalc);
+	t_Gcalc=gpu_point_green ? t_GcalcGPU : TimerToSec(&Timing_Gcalc);
 	t_ar1=TimerToSec(&Timing_ar1);
 	t_ar2=TimerToSec(&Timing_ar2);
 	t_ar3=TimerToSec(&Timing_ar3);
@@ -1703,6 +1777,7 @@ void InitDmatrix(void)
 	t_TYZ=TimerToSec(&Timing_TYZ);
 	t_BT=TimerToSec(&Timing_BT);
 	t_DmGPU=TimerToSec(&Timing_DmGPU);
+	if (gpu_point_green) t_DmGPU=MAX(t_DmGPU-t_GcalcGPU,0);
 	t_Arithm=t_beg+t_Gcalc+t_ar1+t_ar2+t_ar3+t_TYZ;
 	t_FFT=t_fftX+t_fftY+t_fftZ;
 	t_Tot=DiffSystemTime(tvp,tvp+14);
@@ -1719,17 +1794,19 @@ void InitDmatrix(void)
 	}
 
 	if (IFROOT) {
-		if (gpu_dmatrix)
+		if (gpu_dmatrix) {
+			const char *gcalc_label=gpu_point_green ? "GPU Gcalc" : "Gcalc";
 			PrintBoth(logfile,
 				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 				"            Init Dmatrix timing            \n"
 				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 				"Begin         = "FFORMPT"\n"
-				"Gcalc         = "FFORMPT"\n"
+				"%-14s= "FFORMPT"\n"
 				"GPU transform = "FFORMPT"\n"
 				"InitMV        = "FFORMPT"\n"
 				"Total         = "FFORMPT"\n\n",
-				t_beg,t_Gcalc,t_DmGPU,t_InitMV,t_Tot);
+				t_beg,gcalc_label,t_Gcalc,t_DmGPU,t_InitMV,t_Tot);
+		}
 		else
 			PrintBoth(logfile,
 				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
