@@ -39,8 +39,8 @@
 extern cl_context context;
 extern bool bufupload;
 extern cl_command_queue command_queue;
-extern cl_kernel clzero,clarith1,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clnConj,clinprod,cltransposeof,
-	cltransposeob,cltransposeofR;
+extern cl_kernel clzero,clarith1,clarith2,clarith3,clarith3_surface,clarith4,clarith5,cldmatrix_pack_x,
+	cldmatrix_expand_yz,cldmatrix_store_yz,clnConj,clinprod,cltransposeof,cltransposeob,cltransposeofR;
 extern cl_mem bufXmatrix,bufmaterial,bufposition,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 #ifdef OCL_BLAS

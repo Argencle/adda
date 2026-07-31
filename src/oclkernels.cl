@@ -86,6 +86,108 @@ __kernel void clzero(__global double2 *input)
 
 //======================================================================================================================
 
+__kernel void dmatrix_pack_x(__global const double2 *Dmatrix,__global double2 *Xmatrix,
+	const in_sizet cell_count,const in_sizet source_offset,const in_sizet destination_offset,
+	const in_sizet source_stride,const uchar component_base,const uchar component_count,const uchar component_stride)
+/* Gather interleaved Green-tensor components into consecutive batches suitable for clFFT along x. The same kernel
+ * handles the two reduced-FFT component triplets and the quarters of one full, non-reduced component.
+ */
+{
+	const size_t id=get_global_id(0);
+	const size_t component=id/cell_count;
+	const size_t cell=id-component*cell_count;
+
+	if (component<component_count)
+		Xmatrix[destination_offset+component*cell_count+cell]=
+			Dmatrix[6*(source_offset+component*source_stride+cell)+component_base+component*component_stride];
+}
+
+//======================================================================================================================
+
+__kernel void dmatrix_expand_yz(__global const double2 *source,__global double2 *slices,
+	const in_sizet x_start,const in_sizet x_count,const in_sizet local_gridX,const in_sizet gridX,
+	const in_sizet gridY,const in_sizet gridZ,const in_sizet D2sizeY,const in_sizet boxY,const in_sizet boxZ,
+	const in_sizet component_stride,const uchar component_base,const uchar component_count,const uchar reduced_FFT)
+/* Form full spatial yz planes after the x transforms. In reduced mode, reconstruct the even/odd tensor symmetries.
+ * In full mode, source contains one complete x-transformed component and values outside the physical support are zeroed.
+ */
+{
+	size_t index=get_global_id(0);
+	const size_t z=index%gridZ;
+	index/=gridZ;
+	const size_t y=index%gridY;
+	index/=gridY;
+	const size_t xl=index%x_count;
+	const size_t component=index/x_count;
+	const size_t x=x_start+xl;
+	double2 value=(double2)(0.0,0.0);
+
+	if (component<component_count) {
+		if (reduced_FFT) {
+			size_t source_y,source_z;
+			int sign=1;
+			bool valid=true;
+
+			if (y<gridY/2) source_y=y;
+			else if (y>gridY/2) {
+				source_y=gridY-y;
+				if (component_base+component==1 || component_base+component==4) sign=-sign;
+			}
+			else {
+				source_y=0;
+				valid=false; // the spatial Nyquist plane is padding
+			}
+			if (z<gridZ/2) source_z=z;
+			else if (z>gridZ/2) {
+				source_z=gridZ-z;
+				if (component_base+component==2 || component_base+component==4) sign=-sign;
+			}
+			else {
+				source_z=0;
+				valid=false; // the spatial Nyquist plane is padding
+			}
+			if (valid && source_y<boxY && source_z<boxZ) {
+				value=source[component*component_stride+(source_z*D2sizeY+source_y)*gridX+x];
+				if (sign<0) value=-value;
+			}
+		}
+		else {
+			const bool valid_y=(y<boxY || y>gridY-boxY);
+			const bool valid_z=(z<boxZ || z>gridZ-boxZ);
+
+			if (valid_y && valid_z) value=source[(z*gridY+y)*gridX+x];
+		}
+		slices[(component*local_gridX+xl)*gridY*gridZ+y*gridZ+z]=value;
+	}
+}
+
+//======================================================================================================================
+
+__kernel void dmatrix_store_yz(__global const double2 *slices_tr,__global double2 *Dmatrix,
+	const in_sizet x_start,const in_sizet x_count,const in_sizet local_gridX,const in_sizet gridY,
+	const in_sizet gridZ,const in_sizet DsizeY,const in_sizet DsizeZ,const uchar component_base,
+	const uchar component_count,const double scale)
+// Store D=-FFT(G)/(gridX*gridY*gridZ) in the x-major layout used by the MatVec kernels.
+{
+	size_t index=get_global_id(0);
+	const size_t y=index%DsizeY;
+	index/=DsizeY;
+	const size_t z=index%DsizeZ;
+	index/=DsizeZ;
+	const size_t xl=index%x_count;
+	const size_t component=index/x_count;
+
+	if (component<component_count) {
+		const size_t x=x_start+xl;
+		const size_t source_index=(component*local_gridX+xl)*gridY*gridZ+z*gridY+y;
+		const size_t destination_index=6*((x*DsizeZ+z)*DsizeY+y)+component_base+component;
+
+		Dmatrix[destination_index]=scale*slices_tr[source_index];
+	}
+}
+
+//======================================================================================================================
+
 __kernel void arith1(__global const uchar *material,__global const ushort *position,__constant double2 *cc_sqrt,
 	__global const double2 *argvec, __global double2 *Xmatrix,const in_sizet local_Nsmall,const in_sizet smallY,
 	const in_sizet gridX)
