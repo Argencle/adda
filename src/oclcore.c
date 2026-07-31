@@ -39,7 +39,8 @@
 cl_context context;
 cl_command_queue command_queue;
 cl_kernel clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,clarith5_standard,
-	clzero,clinprod,clnConj,cltransposeof,cltransposeob,cltransposeofR,clfarfield_direct,clfarfield_projected;
+	clzero,cldmatrix_pack_x,cldmatrix_expand_yz,cldmatrix_store_yz,clinprod,clnConj,cltransposeof,cltransposeob,
+	cltransposeofR,clfarfield_direct,clfarfield_projected;
 cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 
@@ -451,6 +452,12 @@ void oclinit(void)
 	}
 	clzero=clCreateKernel(program,"clzero",&err);
 	CL_CH_ERR(err);
+	cldmatrix_pack_x=clCreateKernel(program,"dmatrix_pack_x",&err);
+	CL_CH_ERR(err);
+	cldmatrix_expand_yz=clCreateKernel(program,"dmatrix_expand_yz",&err);
+	CL_CH_ERR(err);
+	cldmatrix_store_yz=clCreateKernel(program,"dmatrix_store_yz",&err);
+	CL_CH_ERR(err);
 #ifdef OCL_BLAS
 	if (IterMethod==IT_SHIFTED_BICG_CS) {
 		clshifted_bicg_vtmp=clCreateKernel(program,"shifted_bicg_vtmp",&err);
@@ -585,6 +592,9 @@ void oclunload(void)
 	D("oclunload started");
 	CL_CH_ERR(clReleaseProgram(program));
 	CL_CH_ERR(clReleaseKernel(clzero));
+	CL_CH_ERR(clReleaseKernel(cldmatrix_pack_x));
+	CL_CH_ERR(clReleaseKernel(cldmatrix_expand_yz));
+	CL_CH_ERR(clReleaseKernel(cldmatrix_store_yz));
 #ifdef OCL_BLAS
 	if (IterMethod==IT_SHIFTED_BICG_CS) {
 		CL_CH_ERR(clReleaseKernel(clshifted_bicg_vtmp));

@@ -44,8 +44,8 @@
 #		error "Apple clFFT relies on C++ sources, hence is incompatible with NO_CPP option"
 #	endif
 #endif
-/* standard FFT routines (FFTW3 of FFT_TEMPERTON) are required even when OpenCL is used, since they are used for Fourier
- * transform of the D-matrix
+/* Host FFT routines remain available in OpenCL mode for the reflected R-matrix and for the legacy Apple-clFFT fallback.
+ * The regular clFFT path transforms Dmatrix directly on the device.
  */
 #ifdef FFTW3
 #	include <fftw3.h> // types.h or cmplx.h should be defined before (to match C99 complex type)
@@ -114,6 +114,7 @@ static bool weird_nprocs;      // whether weird number of processors is used
 #	ifdef CLFFT
 static clfftPlanHandle clplanX,clplanY,clplanZ;
 static size_t clfftBufSize=0;
+static cl_mem bufDmatrixWork; // temporary full-grid workspace used only by non-reduced GPU D-matrix initialization
 #	elif defined(CLFFT_APPLE)
 static clFFT_Plan clplanX,clplanY,clplanZ;
 #	endif
@@ -609,7 +610,7 @@ int fftFit(int x,int divis)
 
 //======================================================================================================================
 
-static void fftInitBeforeD(void)
+static void fftInitBeforeD(const bool gpu_dmatrix ONLY_FOR_FFTW3)
 // initialize fft before initialization of Dmatrix
 {
 #ifdef FFTW3
@@ -621,14 +622,19 @@ static void fftInitBeforeD(void)
  * 'dumpbin /exports ...' on the provided DLL, but it will probably require some manual editing.
  */
 #ifndef _MSC_VER
-	D("FFTW library version: %s\n     compiler: %s\n     codelet optimizations: %s",fftw_version,fftw_cc,
-		fftw_codelet_optim);
+	if (!gpu_dmatrix || surface) {
+		D("FFTW library version: %s\n     compiler: %s\n     codelet optimizations: %s",fftw_version,fftw_cc,
+			fftw_codelet_optim);
+	}
 #endif
-	planYf_slice=fftw_plan_many_dft(1,&grYint,gridZ,slice_tr,NULL,1,gridY,slice_tr,NULL,1,gridY,FFT_FORWARD,
-		PLAN_FFTW_DM);
-	planZf_slice=fftw_plan_many_dft(1,&grZint,gridY,slice,NULL,1,gridZ,slice,NULL,1,gridZ,FFT_FORWARD,PLAN_FFTW_DM);
-	planXf_Dm=fftw_plan_many_dft(1,&grXint,lz_Dm*D2sizeY,D2matrix,NULL,1,gridX,D2matrix,NULL,1,gridX,FFT_FORWARD,
-		PLAN_FFTW_DM);
+	if (!gpu_dmatrix || surface) {
+		planYf_slice=fftw_plan_many_dft(1,&grYint,gridZ,slice_tr,NULL,1,gridY,slice_tr,NULL,1,gridY,FFT_FORWARD,
+			PLAN_FFTW_DM);
+		planZf_slice=fftw_plan_many_dft(1,&grZint,gridY,slice,NULL,1,gridZ,slice,NULL,1,gridZ,FFT_FORWARD,PLAN_FFTW_DM);
+	}
+	if (!gpu_dmatrix)
+		planXf_Dm=fftw_plan_many_dft(1,&grXint,lz_Dm*D2sizeY,D2matrix,NULL,1,gridX,D2matrix,NULL,1,gridX,
+			FFT_FORWARD,PLAN_FFTW_DM);
 	// very similar to Dm, but local_Nz_Rm can be smaller by 1 than lz_Rm
 	if (surface) planXf_Rm=fftw_plan_many_dft(1,&grXint,local_Nz_Rm*R2sizeY,R2matrix,NULL,1,gridX,R2matrix,NULL,1,gridX,
 		FFT_FORWARD,PLAN_FFTW_DM);
@@ -636,6 +642,10 @@ static void fftInitBeforeD(void)
 	int nn;
 	size_t size;
 
+#if defined(OPENCL) && defined(CLFFT)
+	// In the regular OpenCL path, host FFTs are now needed only for the reflected Rmatrix.
+	if (gpu_dmatrix && !surface) return;
+#endif
 	// allocate memory
 	MALLOC_VECTOR(trigsX,double,2*gridX,ALL);
 	MALLOC_VECTOR(trigsY,double,2*gridY,ALL);
@@ -655,8 +665,8 @@ static void fftInitBeforeD(void)
 
 //======================================================================================================================
 
-static void fftInitAfterD(void)
-/* second part of fft initialization
+static void fftInitMatVec(void)
+/* initialize FFT plans used by MatVec
  * completely separate code is used for OpenCL and FFTW3, because even precise-timing output is significantly different.
  * In particular, FFTW3 uses separate plans for forward and backward, while clFFT uses one plan for both directions.
  *
@@ -858,17 +868,175 @@ static void fftInitAfterD(void)
 		DiffSystemTime(tvp+3,tvp+4),DiffSystemTime(tvp+4,tvp+5),DiffSystemTime(tvp+5,tvp+6));
 #	endif
 #endif
+}
+
+//======================================================================================================================
+
+static void fftDestroyDPlans(const bool gpu_dmatrix ONLY_FOR_FFTW3)
+// destroy temporary host FFT plans after Dmatrix and, when applicable, Rmatrix have been initialized
+{
 #ifdef FFTW3
-	// destroy old (D,R-matrix) plans; also in OpenCL mode
-	fftw_destroy_plan(planXf_Dm);
-	fftw_destroy_plan(planYf_slice);
-	fftw_destroy_plan(planZf_slice);
+	if (!gpu_dmatrix) fftw_destroy_plan(planXf_Dm);
+	if (!gpu_dmatrix || surface) {
+		fftw_destroy_plan(planYf_slice);
+		fftw_destroy_plan(planZf_slice);
+	}
 	if (surface) fftw_destroy_plan(planXf_Rm);
 #	ifdef OPENCL // in this case, FFTW ends here
-	fftw_cleanup();
+	if (!gpu_dmatrix || surface) fftw_cleanup();
 #	endif
 #endif
 }
+
+//======================================================================================================================
+
+#if defined(OPENCL) && defined(CLFFT)
+static void fftZ_DmatrixOpenCL(void)
+// forward Z transforms of the main slice buffer only (the surface buffer is not initialized yet)
+{
+	CLFFT_CH_ERR(clfftEnqueueTransform(clplanZ,(clfftDirection)FFT_FORWARD,1,&command_queue,0,NULL,NULL,&bufslices,NULL,
+		NULL));
+}
+
+//======================================================================================================================
+
+static void fftY_DmatrixOpenCL(void)
+// forward Y transforms of the main transposed-slice buffer only
+{
+	CLFFT_CH_ERR(clfftEnqueueTransform(clplanY,(clfftDirection)FFT_FORWARD,1,&command_queue,0,NULL,NULL,&bufslices_tr,
+		NULL,NULL));
+}
+
+//======================================================================================================================
+
+static void TransposeYZ_DmatrixOpenCL(void)
+// transpose the main D-matrix slice buffer without touching the not-yet-initialized surface buffers
+{
+	const size_t blocksize=16; // corresponds to BLOCK_DIM in oclkernels.cl
+	const size_t tblock[3]={blocksize,blocksize,1};
+	const size_t tgridZ=DIV_CEILING(gridZ,blocksize)*blocksize;
+	const size_t tgridY=DIV_CEILING(gridY,blocksize)*blocksize;
+	const size_t global[3]={tgridZ,tgridY,3*local_gridX};
+
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,cltransposeof,3,NULL,global,tblock,0,NULL,NULL));
+}
+
+//======================================================================================================================
+
+static void PackDmatrixX(const size_t cell_count,const size_t source_offset,const size_t destination_offset,
+	const size_t source_stride,const cl_uchar component_base,const cl_uchar component_count,
+	const cl_uchar component_stride)
+// enqueue one gather from the interleaved raw Green tensor to the component-separated X-transform buffer
+{
+	const size_t global=cell_count*component_count;
+
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,0,sizeof(cl_mem),&bufDmatrix));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,1,sizeof(cl_mem),&bufXmatrix));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,2,sizeof(size_t),&cell_count));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,3,sizeof(size_t),&source_offset));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,4,sizeof(size_t),&destination_offset));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,5,sizeof(size_t),&source_stride));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,6,sizeof(cl_uchar),&component_base));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,7,sizeof(cl_uchar),&component_count));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_pack_x,8,sizeof(cl_uchar),&component_stride));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,cldmatrix_pack_x,1,NULL,&global,NULL,0,NULL,NULL));
+}
+
+//======================================================================================================================
+
+static void TransformDmatrixYZ(cl_mem source,const cl_uchar component_base,const cl_uchar component_count,
+	const bool reduced,const double scale)
+// finish the Y and Z transforms for one component group and store it in the permanent MatVec layout
+{
+	const size_t boxY_size=boxY,boxZ_size=boxZ;
+	const size_t component_stride=reduced ? local_Nsmall : 0;
+	const cl_uchar reduced_arg=reduced;
+	size_t x_start;
+
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,0,sizeof(cl_mem),&source));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,1,sizeof(cl_mem),&bufslices));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,4,sizeof(size_t),&local_gridX));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,5,sizeof(size_t),&gridX));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,6,sizeof(size_t),&gridY));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,7,sizeof(size_t),&gridZ));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,8,sizeof(size_t),&D2sizeY));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,9,sizeof(size_t),&boxY_size));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,10,sizeof(size_t),&boxZ_size));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,11,sizeof(size_t),&component_stride));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,12,sizeof(cl_uchar),&component_base));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,13,sizeof(cl_uchar),&component_count));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,14,sizeof(cl_uchar),&reduced_arg));
+
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,0,sizeof(cl_mem),&bufslices_tr));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,1,sizeof(cl_mem),&bufDmatrix));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,4,sizeof(size_t),&local_gridX));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,5,sizeof(size_t),&gridY));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,6,sizeof(size_t),&gridZ));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,7,sizeof(size_t),&DsizeY));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,8,sizeof(size_t),&DsizeZ));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,9,sizeof(cl_uchar),&component_base));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,10,sizeof(cl_uchar),&component_count));
+	CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,11,sizeof(double),&scale));
+
+	CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufslices));
+	for (x_start=0;x_start<gridX;x_start+=local_gridX) {
+		const size_t x_count=MIN(local_gridX,gridX-x_start);
+		const size_t expand_global=component_count*x_count*gridYZ;
+		const size_t store_global=component_count*x_count*DsizeYZ;
+
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&slicesize,NULL,0,NULL,NULL));
+		CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,2,sizeof(size_t),&x_start));
+		CL_CH_ERR(clSetKernelArg(cldmatrix_expand_yz,3,sizeof(size_t),&x_count));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,cldmatrix_expand_yz,1,NULL,&expand_global,NULL,0,NULL,NULL));
+		fftZ_DmatrixOpenCL();
+		TransposeYZ_DmatrixOpenCL();
+		fftY_DmatrixOpenCL();
+		CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,2,sizeof(size_t),&x_start));
+		CL_CH_ERR(clSetKernelArg(cldmatrix_store_yz,3,sizeof(size_t),&x_count));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,cldmatrix_store_yz,1,NULL,&store_global,NULL,0,NULL,NULL));
+	}
+}
+
+//======================================================================================================================
+
+static void TransformDmatrixOpenCL(const size_t Dsize,const double invNgrid)
+/* Transform the raw, interleaved Green tensor entirely on the GPU. Reduced FFT processes three components at once
+ * without extra storage. Full FFT uses a temporary one-component grid so the permanent x-major D layout is preserved.
+ */
+{
+	const double scale=-invNgrid;
+
+	// Keep host storage alive until the final clFinish: the upload is deliberately non-blocking.
+	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufDmatrix,CL_FALSE,0,Dsize*sizeof(*Dmatrix),Dmatrix,0,NULL,NULL));
+	if (reduced_FFT) {
+		for (cl_uchar component_base=0;component_base<NDCOMP;component_base+=3) {
+			PackDmatrixX(local_Nsmall,0,0,0,component_base,3,1);
+			fftX(FFT_FORWARD);
+			TransformDmatrixYZ(bufXmatrix,component_base,3,true,scale);
+		}
+	}
+	else {
+		const size_t copy_size=local_Nsmall*sizeof(doublecomplex);
+		const cl_uchar one=1,zero=0;
+
+		for (cl_uchar component=0;component<NDCOMP;component++) {
+			// Transform and save the first three yz quarters.
+			PackDmatrixX(local_Nsmall,0,0,local_Nsmall,component,3,0);
+			fftX(FFT_FORWARD);
+			for (size_t quarter=0;quarter<3;quarter++)
+				CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufXmatrix,bufDmatrixWork,quarter*copy_size,
+					quarter*copy_size,copy_size,0,NULL,NULL));
+
+			// Transform the last quarter in the first batch; the other two batches are no longer needed.
+			PackDmatrixX(local_Nsmall,3*local_Nsmall,0,0,component,one,zero);
+			fftX(FFT_FORWARD);
+			CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufXmatrix,bufDmatrixWork,0,3*copy_size,copy_size,0,NULL,NULL));
+			TransformDmatrixYZ(bufDmatrixWork,component,one,false,scale);
+		}
+	}
+	CL_CH_ERR(clFinish(command_queue));
+}
+#endif
 
 //======================================================================================================================
 
@@ -980,13 +1148,19 @@ void InitDmatrix(void)
 	double invNgrid;
 	int nnn; // multiplier used for reduced_FFT or not reduced; 1 or 2
 	int jstart,kstart;
-	TIME_TYPE start,time1;
+	TIME_TYPE start,time1,early_fft_init=0;
+#if defined(OPENCL) && defined(CLFFT)
+	const bool gpu_dmatrix=true;
+#else
+	const bool gpu_dmatrix=false;
+#endif
 #ifdef PRECISE_TIMING
 	// precise timing of the Dmatrix computation
-	SYSTEM_TIME tvp[15];
+	SYSTEM_TIME tvp[16];
 	SYSTEM_TIME Timing_fftX,Timing_fftY,Timing_fftZ,Timing_Gcalc,Timing_ar1,Timing_ar2,Timing_ar3,Timing_BT,Timing_TYZ,
-		Timing_beg,Timing_InitMV;
-	double t_fftX,t_fftY,t_fftZ,t_ar1,t_ar2,t_ar3,t_TYZ,t_beg,t_Gcalc,t_Arithm,t_FFT,t_BT,t_InitMV,t_Rm,t_Tot;
+		Timing_beg,Timing_InitMV,Timing_DmGPU;
+	double t_fftX,t_fftY,t_fftZ,t_ar1,t_ar2,t_ar3,t_TYZ,t_beg,t_Gcalc,t_Arithm,t_FFT,t_BT,t_InitMV,t_Rm,t_Tot,
+		t_DmGPU;
 
 	// This should be the first occurrence of PRECISE_TIMING in the program
 	SetTimerFreq();
@@ -1001,9 +1175,11 @@ void InitDmatrix(void)
 	InitTime(&Timing_BT);
 	InitTime(&Timing_TYZ);
 	InitTime(&Timing_InitMV);
+	InitTime(&Timing_DmGPU);
 	GET_SYSTEM_TIME(tvp);
 #endif
 	start=GET_TIME();
+	Timing_FFT_Init=0;
 
 	// initialize sizes of D and D2 matrices
 	if (reduced_FFT) {
@@ -1030,6 +1206,10 @@ void InitDmatrix(void)
 	// potentially this may cause unnecessary error during prognosis, but makes code cleaner
 	Dsize=MultOverflow(NDCOMP*local_Nx,DsizeYZ,ONE_POS_FUNC);
 	D2sizeTot=nnn*local_Nz*D2sizeY*gridX; // this should be approximately equal to Dsize/NDCOMP
+#if defined(OPENCL) && defined(CLFFT)
+	if (D2sizeTot!=(reduced_FFT ? local_Nsmall : 4*local_Nsmall))
+		LogError(ALL_POS,"Unexpected Dmatrix/OpenCL workspace sizes (%zu and %zu)",D2sizeTot,local_Nsmall);
+#endif
 	if (IFROOT) fprintf(logfile,"The FFT grid is: %zux%zux%zu\n",gridX,gridY,gridZ);
 
 	// part of the code for InitRmatrix is here to be compatible with prognosis and FFT init
@@ -1094,10 +1274,17 @@ void InitDmatrix(void)
 	 */
 	CREATE_CL_BUFFER(bufcc,CL_MEM_READ_ONLY,(size_t)Nmat * sizeof(*cc),NULL);
 	CREATE_CL_BUFFER(bufcc_sqrt,CL_MEM_READ_ONLY,(size_t)Nmat * sizeof(*cc_sqrt),NULL);
-	CREATE_CL_BUFFER(bufDmatrix,CL_MEM_READ_ONLY,Dsize*sizeof(*Dmatrix),NULL);
+	CREATE_CL_BUFFER(bufDmatrix,CL_MEM_READ_WRITE,Dsize*sizeof(*Dmatrix),NULL);
 	if (surface) CREATE_CL_BUFFER(bufRmatrix,CL_MEM_READ_ONLY,Rsize*sizeof(*Rmatrix),NULL);
 	CREATE_CL_BUFFER(bufmaterial,CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,local_nvoid_Ndip*sizeof(*material),material);
 	CREATE_CL_BUFFER(bufposition,CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,local_nRows*sizeof(*position),position);
+#	ifdef CLFFT
+	/* A full, non-reduced component does not fit in bufXmatrix. Keep its x-transformed values in a temporary
+	 * one-component grid while producing the permanent x-major Dmatrix layout.
+	 */
+	if (!reduced_FFT)
+		CREATE_CL_BUFFER(bufDmatrixWork,CL_MEM_READ_WRITE,gridX*gridYZ*sizeof(doublecomplex),NULL);
+#	endif
 
 	/* In the following bufslices* are allocated, based on available GPU memory.
 	 * The estimation doesn't account for memory, which may be allocated further in fftInitBeforeD(), but it is zero in
@@ -1250,10 +1437,21 @@ void InitDmatrix(void)
 #endif
 	// memory estimation and exit for prognosis
 	MAXIMIZE(memPeak,memory);
-	/* objects which are always allocated (at least temporarily): Dmatrix,D2matrix,slice,slice_tr
-	 * for surface, the peak is either by D2matrix & R2matrix, or by R2matrix & Rmatrix (the latter is mostly probable)
-	 */
-	memPeak+=sizeof(doublecomplex)*((double)Dsize+2*gridYZ+(surface ? (MAX(Rsize,D2sizeTot)+R2sizeTot) : D2sizeTot));
+	if (gpu_dmatrix) {
+		/* Dmatrix is uploaded and freed before Rmatrix is built. Surface calculations still need the two host slices and
+		 * R2matrix, but the temporary D2matrix is entirely eliminated.
+		 */
+		if (surface)
+			memPeak+=sizeof(doublecomplex)*(2*(double)gridYZ+R2sizeTot+MAX((double)Dsize,(double)Rsize));
+		else memPeak+=sizeof(doublecomplex)*(double)Dsize;
+	}
+	else {
+		/* objects allocated for the host transform: Dmatrix,D2matrix,slice,slice_tr. For surface, the peak is either by
+		 * D2matrix & R2matrix, or by R2matrix & Rmatrix.
+		 */
+		memPeak+=sizeof(doublecomplex)*((double)Dsize+2*gridYZ+
+			(surface ? (MAX(Rsize,D2sizeTot)+R2sizeTot) : D2sizeTot));
+	}
 #ifndef OPENCL
 	/* allocated memory that is used further on (Dmatrix,Xmatrix,slices,slices_tr), not relevant for OpenCL version;
 	 * we assume that it is always larger than memPeak above (so memPeak doesn't have to be adjusted). In particular,
@@ -1278,10 +1476,12 @@ void InitDmatrix(void)
 	if (prognosis) return;
 	// allocate memory for Dmatrix
 	MALLOC_VECTOR(Dmatrix,complex,Dsize,ALL);
-	// allocate memory for D2matrix components
-	MALLOC_VECTOR(D2matrix,complex,D2sizeTot,ALL);
-	MALLOC_VECTOR(slice,complex,gridYZ,ALL);
-	MALLOC_VECTOR(slice_tr,complex,gridYZ,ALL);
+	if (!gpu_dmatrix) // allocate memory for the host Dmatrix transform
+		MALLOC_VECTOR(D2matrix,complex,D2sizeTot,ALL);
+	if (!gpu_dmatrix || surface) {
+		MALLOC_VECTOR(slice,complex,gridYZ,ALL);
+		MALLOC_VECTOR(slice_tr,complex,gridYZ,ALL);
+	}
 	/* allocate memory for R2matrix components. In principle, this can be done after D2 matrix is freed. However, this
 	 * way allows us to init all FFT routines (in particular, build FFTW plans) in one go. Moreover, this should not
 	 * increase the peak memory, since Rmatrix is allocated further on (see above).
@@ -1295,7 +1495,16 @@ void InitDmatrix(void)
 	MALLOC_VECTOR(BT_rbuffer,double,bufsize,ALL);
 #endif
 	D("Initialize FFT (1st part)");
-	fftInitBeforeD();
+	fftInitBeforeD(gpu_dmatrix);
+#if defined(OPENCL) && defined(CLFFT)
+	/* The same clFFT plans are used first for Dmatrix and then for every MatVec. Account for their setup separately from
+	 * Dmatrix initialization even though they must now be created earlier.
+	 */
+	time1=GET_TIME();
+	fftInitMatVec();
+	early_fft_init=GET_TIME()-time1;
+	Timing_FFT_Init=early_fft_init;
+#endif
 #ifdef PRECISE_TIMING
 	GET_SYSTEM_TIME(tvp+1);
 	Elapsed(tvp,tvp+1,&Timing_beg); // it includes a lot of OpenCL stuff
@@ -1323,99 +1532,124 @@ void InitDmatrix(void)
 			if (i!=0 || j!=0 || kcor!=0) (*InterTerm_int)(i,j,kcor,Dmatrix+index);
 		}
 	} // end of i,j,k loop
-	if (IFROOT) PRINTFB("Fourier transform of Dmatrix\n");
+	if (IFROOT) {
+		if (gpu_dmatrix) {
+			PRINTFB("Fourier transform of Dmatrix on the OpenCL device\n");
+		}
+		else {
+			PRINTFB("Fourier transform of Dmatrix\n");
+		}
+	}
 #ifdef PRECISE_TIMING
 	GET_SYSTEM_TIME(tvp+11); // same as the last time-stamp in the following loop
 	Elapsed(tvp+1,tvp+11,&Timing_Gcalc);
 #endif
-	for(Dcomp=0;Dcomp<NDCOMP;Dcomp++) { // main cycle over components of Dmatrix
-#ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+2);
-		ElapsedInc(tvp+11,tvp+2,&Timing_InitMV);
+#if defined(OPENCL) && defined(CLFFT)
+	if (gpu_dmatrix) {
+#	ifdef PRECISE_TIMING
+		GET_SYSTEM_TIME(tvp+15);
+#	endif
+		TransformDmatrixOpenCL(Dsize,invNgrid);
+#	ifdef PRECISE_TIMING
+		GET_SYSTEM_TIME(tvp+11);
+		Elapsed(tvp+15,tvp+11,&Timing_DmGPU);
+#	endif
+	}
+	else
 #endif
-		// fill D2matrix with precomputed values from Dmatrix
-		for (ind=0;ind<D2sizeTot;ind++) D2matrix[ind]=Dmatrix[NDCOMP*ind+Dcomp];
+	{
+		for(Dcomp=0;Dcomp<NDCOMP;Dcomp++) { // main cycle over components of Dmatrix
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+3);
-		ElapsedInc(tvp+2,tvp+3,&Timing_ar1);
+			GET_SYSTEM_TIME(tvp+2);
+			ElapsedInc(tvp+11,tvp+2,&Timing_InitMV);
 #endif
-		fftX_Dm(); // fftX D2matrix
+			// fill D2matrix with precomputed values from Dmatrix
+			for (ind=0;ind<D2sizeTot;ind++) D2matrix[ind]=Dmatrix[NDCOMP*ind+Dcomp];
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+4);
-		ElapsedInc(tvp+3,tvp+4,&Timing_fftX);
+			GET_SYSTEM_TIME(tvp+3);
+			ElapsedInc(tvp+2,tvp+3,&Timing_ar1);
 #endif
-		BlockTranspose_DRm(D2matrix,D2sizeY,lz_Dm);
+			fftX_Dm(); // fftX D2matrix
 #ifdef PRECISE_TIMING
-		GET_SYSTEM_TIME(tvp+5);
-		ElapsedInc(tvp+4,tvp+5,&Timing_BT);
+			GET_SYSTEM_TIME(tvp+4);
+			ElapsedInc(tvp+3,tvp+4,&Timing_fftX);
 #endif
-		for(x=local_x0;x<local_x1;x++) {
+			BlockTranspose_DRm(D2matrix,D2sizeY,lz_Dm);
 #ifdef PRECISE_TIMING
-			GET_SYSTEM_TIME(tvp+6);
+			GET_SYSTEM_TIME(tvp+5);
+			ElapsedInc(tvp+4,tvp+5,&Timing_BT);
 #endif
-			for (ind=0;ind<gridYZ;ind++) slice[ind]=0.0; // fill slice with 0.0
-			for(j=jstart;j<boxY;j++) for(k=kstart;k<boxZ;k++) {
-				indexfrom=IndexGarbledD(x,j,k);
-				indexto=IndexSliceD2matrix(j,k);
-				slice[indexto]=D2matrix[indexfrom];
-			}
-			if (reduced_FFT) { // here a specific symmetry is used, that G is a combination of tensors I and RR/|R|^2
-				for(j=1;j<boxY;j++) for(k=0;k<boxZ;k++) {
-					// mirror along y
-					indexfrom=IndexSliceD2matrix(j,k);
-					indexto=IndexSliceD2matrix(-j,k);
-					if (Dcomp==1 || Dcomp==4) slice[indexto]=-slice[indexfrom];
-					else slice[indexto]=slice[indexfrom];
+			for(x=local_x0;x<local_x1;x++) {
+#ifdef PRECISE_TIMING
+				GET_SYSTEM_TIME(tvp+6);
+#endif
+				for (ind=0;ind<gridYZ;ind++) slice[ind]=0.0; // fill slice with 0.0
+				for(j=jstart;j<boxY;j++) for(k=kstart;k<boxZ;k++) {
+					indexfrom=IndexGarbledD(x,j,k);
+					indexto=IndexSliceD2matrix(j,k);
+					slice[indexto]=D2matrix[indexfrom];
 				}
-				for(j=1-boxY;j<boxY;j++) for(k=1;k<boxZ;k++) {
-					// mirror along z
-					indexfrom=IndexSliceD2matrix(j,k);
-					indexto=IndexSliceD2matrix(j,-k);
-					if (Dcomp==2 || Dcomp==4) slice[indexto]=-slice[indexfrom];
-					else slice[indexto]=slice[indexfrom];
+				if (reduced_FFT) { // use tensor symmetry to reconstruct the negative y and z halves
+					for(j=1;j<boxY;j++) for(k=0;k<boxZ;k++) {
+						// mirror along y
+						indexfrom=IndexSliceD2matrix(j,k);
+						indexto=IndexSliceD2matrix(-j,k);
+						if (Dcomp==1 || Dcomp==4) slice[indexto]=-slice[indexfrom];
+						else slice[indexto]=slice[indexfrom];
+					}
+					for(j=1-boxY;j<boxY;j++) for(k=1;k<boxZ;k++) {
+						// mirror along z
+						indexfrom=IndexSliceD2matrix(j,k);
+						indexto=IndexSliceD2matrix(j,-k);
+						if (Dcomp==2 || Dcomp==4) slice[indexto]=-slice[indexfrom];
+						else slice[indexto]=slice[indexfrom];
+					}
 				}
-			}
 #ifdef PRECISE_TIMING
-			GET_SYSTEM_TIME(tvp+7);
-			ElapsedInc(tvp+6,tvp+7,&Timing_ar2);
+				GET_SYSTEM_TIME(tvp+7);
+				ElapsedInc(tvp+6,tvp+7,&Timing_ar2);
 #endif
-			fftZ_slice(); // fftZ slice
+				fftZ_slice(); // fftZ slice
 #ifdef PRECISE_TIMING
-			GET_SYSTEM_TIME(tvp+8);
-			ElapsedInc(tvp+7,tvp+8,&Timing_fftZ);
+				GET_SYSTEM_TIME(tvp+8);
+				ElapsedInc(tvp+7,tvp+8,&Timing_fftZ);
 #endif
-			transpose(slice,slice_tr,gridY,gridZ);
+				transpose(slice,slice_tr,gridY,gridZ);
 #ifdef PRECISE_TIMING
-			GET_SYSTEM_TIME(tvp+9);
-			ElapsedInc(tvp+8,tvp+9,&Timing_TYZ);
+				GET_SYSTEM_TIME(tvp+9);
+				ElapsedInc(tvp+8,tvp+9,&Timing_TYZ);
 #endif
-			fftY_slice(); // fftY slice_tr
+				fftY_slice(); // fftY slice_tr
 #ifdef PRECISE_TIMING
-			GET_SYSTEM_TIME(tvp+10);
-			ElapsedInc(tvp+9,tvp+10,&Timing_fftY);
+				GET_SYSTEM_TIME(tvp+10);
+				ElapsedInc(tvp+9,tvp+10,&Timing_fftY);
 #endif
-			for(z=0;z<DsizeZ;z++) for(y=0;y<DsizeY;y++) {
-				indexto=IndexDmatrix(x-local_x0,y,z)+Dcomp;
-				indexfrom=IndexSlice_zy(y,z);
-				Dmatrix[indexto]=-invNgrid*slice_tr[indexfrom];
-			}
+				for(z=0;z<DsizeZ;z++) for(y=0;y<DsizeY;y++) {
+					indexto=IndexDmatrix(x-local_x0,y,z)+Dcomp;
+					indexfrom=IndexSlice_zy(y,z);
+					Dmatrix[indexto]=-invNgrid*slice_tr[indexfrom];
+				}
 #ifdef PRECISE_TIMING
-			GET_SYSTEM_TIME(tvp+11);
-			ElapsedInc(tvp+10,tvp+11,&Timing_ar3);
+				GET_SYSTEM_TIME(tvp+11);
+				ElapsedInc(tvp+10,tvp+11,&Timing_ar3);
 #endif
-		} // end slice X
-	} // end of Dcomp
-	// free vectors used for computation of Dmatrix; slice and slice_tr are freed after InitRmatrix
-	Free_cVector(D2matrix);
+			} // end slice X
+		} // end of Dcomp
+		// free vectors used for host computation of Dmatrix; slice and slice_tr are freed after InitRmatrix
+		Free_cVector(D2matrix);
+	}
 #ifdef PARALLEL
 	// deallocate buffers for BlockTranspose_DRm
 	Free_general(BT_buffer);
 	Free_general(BT_rbuffer);
 #endif
 #ifdef OPENCL
-	// copy Dmatrix to OpenCL buffer, blocking to ensure completion before function end
-	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufDmatrix,CL_TRUE,0,Dsize*sizeof(*Dmatrix),Dmatrix,0,NULL,NULL));
+	if (!gpu_dmatrix) // fallback path: copy the host-transformed Dmatrix to the device
+		CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufDmatrix,CL_TRUE,0,Dsize*sizeof(*Dmatrix),Dmatrix,0,NULL,NULL));
 	Free_cVector(Dmatrix);
+#	ifdef CLFFT
+	if (!reduced_FFT) my_clReleaseBuffer(bufDmatrixWork);
+#	endif
 #endif
 	if (surface) { // only the total execution time of InitRmatrix is timed
 #ifdef PRECISE_TIMING
@@ -1428,8 +1662,10 @@ void InitDmatrix(void)
 			t_Rm=DiffSystemTime(tvp+12,tvp+13);
 #endif
 	}
-	Free_cVector(slice);
-	Free_cVector(slice_tr);
+	if (!gpu_dmatrix || surface) {
+		Free_cVector(slice);
+		Free_cVector(slice_tr);
+	}
 #ifdef PARALLEL
 	// allocate buffers for BlockTranspose
 	MALLOC_VECTOR(BT_buffer,double,BTsize,ALL);
@@ -1446,7 +1682,7 @@ void InitDmatrix(void)
 	}
 #endif
 	time1=GET_TIME();
-	Timing_Dm_Init=time1-start;
+	Timing_Dm_Init=time1-start-early_fft_init;
 
 #ifdef PRECISE_TIMING
 	GET_SYSTEM_TIME(tvp+14);
@@ -1466,38 +1702,60 @@ void InitDmatrix(void)
 	t_fftZ=TimerToSec(&Timing_fftZ);
 	t_TYZ=TimerToSec(&Timing_TYZ);
 	t_BT=TimerToSec(&Timing_BT);
+	t_DmGPU=TimerToSec(&Timing_DmGPU);
 	t_Arithm=t_beg+t_Gcalc+t_ar1+t_ar2+t_ar3+t_TYZ;
 	t_FFT=t_fftX+t_fftY+t_fftZ;
 	t_Tot=DiffSystemTime(tvp,tvp+14);
 
+	if (gpu_dmatrix) {
+		t_beg-=early_fft_init;
+		t_Tot-=early_fft_init;
+		t_Arithm=t_beg+t_Gcalc;
+		t_FFT=t_DmGPU;
+	}
 	if (surface) { // correct InitMV and Total time by that of InitRmatrix
 		t_InitMV-=t_Rm;
 		t_Tot-=t_Rm;
 	}
 
-	if (IFROOT) PrintBoth(logfile,
-		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-		"            Init Dmatrix timing            \n"
-		"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-		"Begin  = "FFORMPT"    Arithmetics = "FFORMPT"\n"
-		"Gcalc  = "FFORMPT"    FFT         = "FFORMPT"\n"
-		"Arith1 = "FFORMPT"    Comm        = "FFORMPT"\n"
-		"FFTX   = "FFORMPT"    Init MatVec = "FFORMPT"\n"
-		"BT     = "FFORMPT"\n"
-		"Arith2 = "FFORMPT"          Total = "FFORMPT"\n"
-		"FFTZ   = "FFORMPT"\n"
-		"TYZ    = "FFORMPT"\n"
-		"FFTY   = "FFORMPT"\n"
-		"Arith3 = "FFORMPT"\n"
-		"InitMV = "FFORMPT"\n\n",
-		t_beg,t_Arithm,t_Gcalc,t_FFT,t_ar1,t_BT,t_fftX,t_InitMV,t_BT,t_ar2,t_Tot,t_fftZ,t_TYZ,t_fftY,
-		t_ar3,t_InitMV);
+	if (IFROOT) {
+		if (gpu_dmatrix)
+			PrintBoth(logfile,
+				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+				"            Init Dmatrix timing            \n"
+				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+				"Begin         = "FFORMPT"\n"
+				"Gcalc         = "FFORMPT"\n"
+				"GPU transform = "FFORMPT"\n"
+				"InitMV        = "FFORMPT"\n"
+				"Total         = "FFORMPT"\n\n",
+				t_beg,t_Gcalc,t_DmGPU,t_InitMV,t_Tot);
+		else
+			PrintBoth(logfile,
+				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+				"            Init Dmatrix timing            \n"
+				"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+				"Begin  = "FFORMPT"    Arithmetics = "FFORMPT"\n"
+				"Gcalc  = "FFORMPT"    FFT         = "FFORMPT"\n"
+				"Arith1 = "FFORMPT"    Comm        = "FFORMPT"\n"
+				"FFTX   = "FFORMPT"    Init MatVec = "FFORMPT"\n"
+				"BT     = "FFORMPT"\n"
+				"Arith2 = "FFORMPT"          Total = "FFORMPT"\n"
+				"FFTZ   = "FFORMPT"\n"
+				"TYZ    = "FFORMPT"\n"
+				"FFTY   = "FFORMPT"\n"
+				"Arith3 = "FFORMPT"\n"
+				"InitMV = "FFORMPT"\n\n",
+				t_beg,t_Arithm,t_Gcalc,t_FFT,t_ar1,t_BT,t_fftX,t_InitMV,t_BT,t_ar2,t_Tot,t_fftZ,t_TYZ,t_fftY,
+				t_ar3,t_InitMV);
+	}
 	if (surface && IFROOT) PrintBoth(logfile,"Additionally time for initialization of Rmatrix = "FFORMPT"\n\n",t_Rm);
 #endif
 
-	fftInitAfterD();
-
-	Timing_FFT_Init = GET_TIME()-time1;
+	time1=GET_TIME();
+	if (!gpu_dmatrix) fftInitMatVec();
+	fftDestroyDPlans(gpu_dmatrix);
+	Timing_FFT_Init+=GET_TIME()-time1;
 }
 
 //======================================================================================================================
@@ -1542,6 +1800,9 @@ void Free_FFT_Dmat(void)
 		my_clReleaseBuffer(bufslicesR_tr);
 	}
 #	ifdef CLFFT
+	CLFFT_CH_ERR(clfftDestroyPlan(&clplanX));
+	CLFFT_CH_ERR(clfftDestroyPlan(&clplanY));
+	CLFFT_CH_ERR(clfftDestroyPlan(&clplanZ));
 	CLFFT_CH_ERR(clfftTeardown());
 	oclMem-=clfftBufSize;
 #	elif defined(CLFFT_APPLE)
@@ -1579,7 +1840,7 @@ void Free_FFT_Dmat(void)
 	fftw_cleanup();
 #	endif
 #endif
-#ifdef FFT_TEMPERTON // these vectors are used even with OpenCL
+#ifdef FFT_TEMPERTON // these vectors may also be used with OpenCL for the reflected Rmatrix
 	Free_general(work);
 	Free_general(trigsX);
 	Free_general(trigsY);
