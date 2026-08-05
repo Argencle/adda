@@ -36,7 +36,7 @@
 // defined and initialized in calculator.c
 extern doublecomplex * restrict E_ad;
 extern double * restrict E2_alldir;
-extern const doublecomplex cc[][3];
+extern doublecomplex cc[MAX_NMAT][3];
 #ifndef SPARSE
 extern doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ;
 #endif
@@ -1098,7 +1098,7 @@ double ScaCross(const char *f_suf)
 	SnprintfErr(ONE_POS,fname,MAX_FNAME,"%s/"F_LOG_INT_CSCA "%s",directory,f_suf);
 
 	tstart = GET_TIME();
-	Romberg2D(parms,CscaIntegrand,1,&res,fname);
+	Romberg2D(parms,CscaIntegrand,1,&res,fname,NULL,0);
 	res*=FOUR_PI/(WaveNum*WaveNum);
 	if (surface) res*=inc_scale;
 	Timing_Integration += GET_TIME() - tstart;
@@ -1138,7 +1138,7 @@ static void AsymParm(double *vec,const char *f_suf)
 	SnprintfErr(ONE_POS,log_int,MAX_FNAME,"%s/"F_LOG_INT_ASYM "%s",directory,f_suf);
 
 	tstart = GET_TIME();
-	Romberg2D(parms,gIntegrand,3,vec,log_int);
+	Romberg2D(parms,gIntegrand,3,vec,log_int,NULL,0);
 	vMultScal(FOUR_PI/(WaveNum*WaveNum),vec,vec);
 	if (surface) vMultScal(inc_scale,vec,vec);
 	Timing_Integration += GET_TIME() - tstart;
@@ -1170,7 +1170,7 @@ void AsymParm_x(double *vec,const char *f_suf)
 	SnprintfErr(ONE_POS,log_int,MAX_FNAME,"%s/"F_LOG_INT_ASYM F_LOG_X"%s",directory,f_suf);
 
 	tstart = GET_TIME();
-	Romberg2D(parms,gxIntegrand,1,vec,log_int);
+	Romberg2D(parms,gxIntegrand,1,vec,log_int,NULL,0);
 	vec[0] *= FOUR_PI/(WaveNum*WaveNum);
 	if (surface) vec[0]*=inc_scale;
 	Timing_Integration += GET_TIME() - tstart;
@@ -1202,7 +1202,7 @@ void AsymParm_y(double *vec,const char *f_suf)
 	SnprintfErr(ONE_POS,log_int,MAX_FNAME,"%s/"F_LOG_INT_ASYM F_LOG_Y"%s",directory,f_suf);
 
 	tstart = GET_TIME();
-	Romberg2D(parms,gyIntegrand,1,vec,log_int);
+	Romberg2D(parms,gyIntegrand,1,vec,log_int,NULL,0);
 	vec[0] *= FOUR_PI/(WaveNum*WaveNum);
 	if (surface) vec[0]*=inc_scale;
 	Timing_Integration += GET_TIME() - tstart;
@@ -1230,7 +1230,7 @@ void AsymParm_z(double *vec,const char *f_suf)
 	SnprintfErr(ONE_POS,log_int,MAX_FNAME,"%s/"F_LOG_INT_ASYM F_LOG_Z"%s",directory,f_suf);
 
 	tstart = GET_TIME();
-	Romberg2D(parms,gzIntegrand,1,vec,log_int);
+	Romberg2D(parms,gzIntegrand,1,vec,log_int,NULL,0);
 	vec[0] *= FOUR_PI/(WaveNum*WaveNum);
 	if (surface) vec[0]*=inc_scale;
 	Timing_Integration += GET_TIME() - tstart;

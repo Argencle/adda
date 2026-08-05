@@ -57,12 +57,18 @@ extern int term_width;
 // refractive index
 extern int Nmat,Ncomp;
 extern doublecomplex ref_index[MAX_NMAT];
+extern doublecomplex cc[MAX_NMAT][3];
 extern doublecomplex cc_sqrt[MAX_NMAT][3];
 extern doublecomplex chi_inv[MAX_NMAT][3];
+extern doublecomplex shifted_ref_index[MAX_N_SHIFTED];
+extern doublecomplex shifted_cc[MAX_N_SHIFTED][3];
+extern doublecomplex shifted_cc_sqrt[MAX_N_SHIFTED][3];
+extern doublecomplex shifted_chi_inv[MAX_N_SHIFTED][3];
 extern unsigned char * restrict material;
 
 // iterative solver
 extern enum iter IterMethod;
+extern enum matvec_mode MatVecMode;
 extern int maxiter;
 extern doublecomplex *xvec,*pvec,* restrict Einc;
 
@@ -96,6 +102,17 @@ extern size_t smallY,smallZ;
 extern size_t local_Nsmall;
 extern int local_z0,local_z1,local_z1_coer,local_Nz_unif;
 extern size_t local_Nz,local_x0,local_x1,local_Nx;
+
+// For Shifted BiCG CS algorithm:
+extern doublecomplex *lArray;
+extern doublecomplex *dArray;
+extern doublecomplex *sigmaArray;
+extern doublecomplex *uArray;
+extern doublecomplex **pArray;
+extern doublecomplex **xArray;
+extern double *inprodRp1Array;
+extern bool *continue_flag;
+extern int num_used_n; // number of used refractive indexes
 
 #else // These variables are exclusive to the sparse mode
 

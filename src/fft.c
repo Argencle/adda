@@ -1075,11 +1075,19 @@ void InitDmatrix(void)
 	// create all Buffers needed on Device in MatVec; When prognosis, the following code just counts required memory
 	CREATE_CL_BUFFER(bufXmatrix,CL_MEM_READ_WRITE,local_Nsmall*3*sizeof(doublecomplex),NULL);
 #	ifdef OCL_BLAS
-	if (IterMethod==IT_BICG_CS) { // currently, used only in one iterative solver
-		// Most clBLAS functions require scratch buffer of size N (Dznrm2 requires 2N, but it is not currently used)
-		CREATE_CL_BUFFER(buftmp,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
+	if (IterMethod==IT_BICG_CS) {
+		// Most clBLAS functions require scratch buffer of size N, but Dznrm2 - 2N
+		CREATE_CL_BUFFER(buftmp,CL_MEM_READ_WRITE,local_nRows*2*sizeof(doublecomplex),NULL);
 		CREATE_CL_BUFFER(bufxvec,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
 		CREATE_CL_BUFFER(bufrvec,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
+	}
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		CREATE_CL_BUFFER(buftmp,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
+		CREATE_CL_BUFFER(bufvpr,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
+		CREATE_CL_BUFFER(bufvtmp,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
+		CREATE_CL_BUFFER(bufvnext,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
+		CREATE_CL_BUFFER(bufpArray,CL_MEM_READ_WRITE,(size_t)num_used_n*local_nRows*sizeof(doublecomplex),NULL);
+		CREATE_CL_BUFFER(bufxArray,CL_MEM_READ_WRITE,(size_t)num_used_n*local_nRows*sizeof(doublecomplex),NULL);
 	}
 #	endif
 	CREATE_CL_BUFFER(bufargvec,CL_MEM_READ_WRITE,local_nRows*sizeof(doublecomplex),NULL);
@@ -1096,7 +1104,8 @@ void InitDmatrix(void)
 	/* The following are constant device buffers which are initialized with host data. They are all created here (to be
 	 * compatible with prognosis), but some are initialized (filled with data) later.
 	 */
-	CREATE_CL_BUFFER(bufcc_sqrt,CL_MEM_READ_ONLY,sizeof(cc_sqrt),NULL);
+	CREATE_CL_BUFFER(bufcc,CL_MEM_READ_ONLY,(size_t)Nmat * sizeof(*cc),NULL);
+	CREATE_CL_BUFFER(bufcc_sqrt,CL_MEM_READ_ONLY,(size_t)Nmat * sizeof(*cc_sqrt),NULL);
 	CREATE_CL_BUFFER(bufDmatrix,CL_MEM_READ_ONLY,Dsize*sizeof(*Dmatrix),NULL);
 	if (surface) CREATE_CL_BUFFER(bufRmatrix,CL_MEM_READ_ONLY,Rsize*sizeof(*Rmatrix),NULL);
 	CREATE_CL_BUFFER(bufmaterial,CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,local_nvoid_Ndip*sizeof(*material),material);
@@ -1183,6 +1192,13 @@ void InitDmatrix(void)
 		CL_CH_ERR(clSetKernelArg(clarith1,5,sizeof(size_t),&local_Nsmall));
 		CL_CH_ERR(clSetKernelArg(clarith1,6,sizeof(size_t),&smallY));
 		CL_CH_ERR(clSetKernelArg(clarith1,7,sizeof(size_t),&gridX));
+		// for arith1_raw
+		CL_CH_ERR(clSetKernelArg(clarith1_raw,0,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith1_raw,1,sizeof(cl_mem),&bufargvec));
+		CL_CH_ERR(clSetKernelArg(clarith1_raw,2,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith1_raw,3,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith1_raw,4,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith1_raw,5,sizeof(size_t),&gridX));
 		// for arith2
 		CL_CH_ERR(clSetKernelArg(clarith2,0,sizeof(cl_mem),&bufXmatrix));
 		CL_CH_ERR(clSetKernelArg(clarith2,1,sizeof(cl_mem),&bufslices));
@@ -1217,6 +1233,23 @@ void InitDmatrix(void)
 		CL_CH_ERR(clSetKernelArg(clarith5,6,sizeof(size_t),&smallY));
 		CL_CH_ERR(clSetKernelArg(clarith5,7,sizeof(size_t),&gridX));
 		CL_CH_ERR(clSetKernelArg(clarith5,8,sizeof(cl_mem),&bufresultvec));
+		// for arith5_raw
+		CL_CH_ERR(clSetKernelArg(clarith5_raw,0,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith5_raw,1,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith5_raw,2,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith5_raw,3,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith5_raw,4,sizeof(size_t),&gridX));
+		CL_CH_ERR(clSetKernelArg(clarith5_raw,5,sizeof(cl_mem),&bufresultvec));
+		// for arith5_standard
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,0,sizeof(cl_mem),&bufmaterial));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,1,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,2,sizeof(cl_mem),&bufcc));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,3,sizeof(cl_mem),&bufargvec));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,4,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,5,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,6,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,7,sizeof(size_t),&gridX));
+		CL_CH_ERR(clSetKernelArg(clarith5_standard,8,sizeof(cl_mem),&bufresultvec));
 		// transpose kernels, first for transpose forward
 		CL_CH_ERR(clSetKernelArg(cltransposeof,0,sizeof(cl_mem),&bufslices));
 		CL_CH_ERR(clSetKernelArg(cltransposeof,1,sizeof(cl_mem),&bufslices_tr));
@@ -1494,15 +1527,24 @@ void Free_FFT_Dmat(void)
 #ifdef OPENCL
 	CL_CH_ERR(clFinish(command_queue)); // finish queue before freeing resources
 #	ifdef OCL_BLAS
-	if (IterMethod==IT_BICG_CS) { // currently, used only in one iterative solver
+	if (IterMethod==IT_BICG_CS) {
 		my_clReleaseBuffer(buftmp);
 		my_clReleaseBuffer(bufxvec);
 		my_clReleaseBuffer(bufrvec);
+	}
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		my_clReleaseBuffer(buftmp);
+		my_clReleaseBuffer(bufvpr);
+		my_clReleaseBuffer(bufvtmp);
+		my_clReleaseBuffer(bufvnext);
+		my_clReleaseBuffer(bufpArray);
+		my_clReleaseBuffer(bufxArray);
 	}
 #	endif
 	my_clReleaseBuffer(bufXmatrix);
 	my_clReleaseBuffer(bufmaterial);
 	my_clReleaseBuffer(bufposition);
+	my_clReleaseBuffer(bufcc);
 	my_clReleaseBuffer(bufcc_sqrt);
 	my_clReleaseBuffer(bufargvec);
 	my_clReleaseBuffer(bufresultvec);

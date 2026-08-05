@@ -146,6 +146,7 @@ enum init_field InitField; // how to calculate initial field for the iterative s
 const char *infi_fnameY;   // names of files, defining the initial field (for two polarizations)
 const char *infi_fnameX;
 bool recalc_resid;         // whether to recalculate residual at the end of iterative solver
+static bool form_used;     // whether the linear-system formulation was explicitly specified
 enum chpoint chp_type;     // type of checkpoint (to save)
 time_t chp_time;           // time of checkpoint (in sec)
 char const *chp_dir;       // directory name to save/load checkpoint
@@ -178,6 +179,7 @@ static const char *run_name;    // first part of the dir name ('run' or 'test')
 static const char *avg_parms;   // name of file with orientation averaging parameters
 static const char *exename;     // name of executable (adda, adda.exe, adda_mpi,...)
 static int Nmat_given;          // number of refractive indices given in the command line
+static doublecomplex ref_index_input[MAX_N_SHIFTED]; // refractive indices exactly as given to '-m'
 static enum sym sym_type;       // how to treat particle symmetries
 static int sobuf;               // mode for stdout buffering
 /* The following '..._used' flags are, in principle, redundant, since the structure 'options' contains the same flags.
@@ -191,6 +193,7 @@ static bool scat_plane_used;    // whether '-scat_plane ...' was used in the com
 static bool so_buf_used;        // whether '-so_buf ...' was used in the command line
 static bool beam_center_used;   // whether '-beam_center ...' was used in the command line
 static bool deprecated_bc_used; // whether '-beam ... <x> <y> <z>' was used in the command line (deprecated option)
+static bool init_field_used;    // whether '-init_field ...' was used in the command line
 
 /* TO ADD NEW COMMAND LINE OPTION
  * If you need new variables or flags to implement effect of the new command line option, define them here. If a
@@ -392,6 +395,7 @@ PARSE_FUNC(dir);
 PARSE_FUNC(dpl);
 PARSE_FUNC(eps);
 PARSE_FUNC(eq_rad);
+PARSE_FUNC(form);
 #ifdef OPENCL
 PARSE_FUNC(gpu);
 #endif
@@ -489,6 +493,10 @@ static struct opt_struct options[]={
 		"defined by some shapes themselves, then this option can be used to override the internal specification and "
 		"scale the shape.\n"
 		"Default: determined by the value of '-size' or by '-grid', '-dpl', '-lambda', and '-rect_dip'.",1,NULL},
+	{PAR(form),"{standard|symmetrized}","Sets the formulation of the linear system. The standard formulation solves "
+		"(D+C^(-1))P=E_inc; the symmetrized formulation solves "
+		"(I+sqrt(C)Dsqrt(C))x=sqrt(C)E_inc.\n"
+		"The 'sbicg' solver supports only the standard (shifted) formulation.\nDefault: symmetrized",1,NULL},
 #ifdef OPENCL
 	{PAR(gpu),"<index>","Specifies index of GPU that should be used (starting from 0). Relevant only for OpenCL "
 		"version of ADDA, running on a system with several GPUs.\n"
@@ -567,7 +575,7 @@ static struct opt_struct options[]={
 		 * !!! If subarguments are added, second-to-last argument should be changed from 1 to UNDEF, and consistency
 		 * test for number of arguments should be implemented in PARSE_FUNC(int_surf) below.
 		 */
-	{PAR(iter),"{bcgs2|bicg|bicgstab|cgnr|csym|qmr|qmr2}","Sets the iterative solver.\n"
+	{PAR(iter),"{bcgs2|bicg|bicgstab|cgnr|csym|qmr|qmr2|sbicg}","Sets the iterative solver.\n"
 		"Default: qmr",1,NULL},
 		/* TO ADD NEW ITERATIVE SOLVER
 		 * add the short name, used to define the new iterative solver in the command line, to the list "{...}" in the
@@ -583,7 +591,8 @@ static struct opt_struct options[]={
 		"the domains. If '-anisotr' is specified, three refractive indices correspond to one domain (diagonal elements "
 		"of refractive index tensor in particle reference frame). Maximum number of different refractive indices is "
     TO_STRING(MAX_NMAT) " (controlled by the parameter MAX_NMAT in const.h). None of the refractive indices can be "
-    "equal to 1+0i.\n"
+    "equal to 1+0i. With '-iter sbicg', the values are interpreted as shifted systems "
+		"for one homogeneous isotropic particle, up to MAX_N_SHIFTED values.\n"
 		"Default: 1.5 0",UNDEF,NULL},
 	{PAR(maxiter),"<arg>","Sets the maximum number of iterations of the iterative solver, integer.\n"
 		"Default: very large, not realistic value",1,NULL},
@@ -854,8 +863,8 @@ static void TestNarg(const int Narg,const int need)
 {
 	if (need>=0) { // usual case
 		if (Narg!=need) {
-			char buf[MAX_WORD];
-			snprintf(buf,MAX_WORD,"%d",need);
+			char buf[16];
+			snprintf(buf,sizeof(buf),"%d",need);
 			NargError(Narg,buf);
 		}
 	} // otherwise special cases are considered, encoded by negative values
@@ -1142,6 +1151,13 @@ PARSE_FUNC(eq_rad)
 	ScanDoubleError(argv[1],&a_eq);
 	TestPositive(a_eq,"equivalent radius");
 }
+PARSE_FUNC(form)
+{
+	form_used=true;
+	if (strcmp(argv[1],"standard")==0) MatVecMode=MV_STANDARD;
+	else if (strcmp(argv[1],"symmetrized")==0 || strcmp(argv[1],"symm")==0) MatVecMode=MV_SYMMETRIZED;
+	else NotSupported("Linear-system formulation",argv[1]);
+}
 #ifdef OPENCL
 PARSE_FUNC(gpu)
 {
@@ -1243,6 +1259,7 @@ PARSE_FUNC(init_field)
 {
 	bool noExtraArgs=true;
 
+	init_field_used=true;
 	if (Narg<1 || Narg>3) NargError(Narg,"from 1 to 3");
 	if (strcmp(argv[1],"auto")==0) InitField=IF_AUTO;
 	else if (strcmp(argv[1],"inc")==0) InitField=IF_INC;
@@ -1335,6 +1352,7 @@ PARSE_FUNC(iter)
 	else if (strcmp(argv[1],"csym")==0) IterMethod=IT_CSYM;
 	else if (strcmp(argv[1],"qmr")==0) IterMethod=IT_QMR_CS;
 	else if (strcmp(argv[1],"qmr2")==0) IterMethod=IT_QMR_CS_2;
+	else if (strcmp(argv[1],"sbicg")==0) IterMethod=IT_SHIFTED_BICG_CS;
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * add the line to else-if sequence above in the alphabetical order, analogous to the ones already present. The
 	 * variable parts of the line are its name used in command line and its descriptor, defined in const.h
@@ -1357,15 +1375,18 @@ PARSE_FUNC(m)
 	double mre,mim;
 
 	if (IS_ODD(Narg) || Narg==0) NargError(Narg,"even");
-	Nmat=Nmat_given=Narg/2;
-	if (Nmat>MAX_NMAT) PrintErrorHelp("Too many materials (%d), maximum %d are supported. You may increase parameter "
-		"MAX_NMAT in const.h and recompile.",Nmat,MAX_NMAT);
-	for (i=0;i<Nmat;i++) {
+	Nmat_given=Narg/2;
+	// TODO: this needs ot be changed because this condition duplicates the one in FinalizeRefractiveIndices and is 
+	// inconsistent given that Max_N_SHIFTED is not necessarily the same as Max_m in general case. 
+	if (Nmat_given>MAX_N_SHIFTED) PrintErrorHelp("Too many refractive indices (%d), maximum %d are supported for "
+		"shifted solvers. You may increase parameter MAX_N_SHIFTED in const.h and recompile.",Nmat_given,
+		MAX_N_SHIFTED);
+	for (i=0;i<Nmat_given;i++) {
 		ScanDoubleError(argv[2*i+1],&mre);
 		ScanDoubleError(argv[2*i+2],&mim);
-		ref_index[i] = mre + I*mim;
-		if (ref_index[i]==1) PrintErrorHelp("Given refractive index #%d is that of vacuum, which is not supported. "
-			"Consider using, for instance, 1.0001 instead.",i+1);
+		ref_index_input[i] = mre + I*mim;
+		if (ref_index_input[i]==1) PrintErrorHelp("Given refractive index #%d is that of vacuum, which is not "
+			"supported. Consider using, for instance, 1.0001 instead.",i+1);
 	}
 }
 PARSE_FUNC(maxiter)
@@ -1990,6 +2011,8 @@ void InitVariables(void)
 	// initialize ref_index of scatterer
 	Nmat=Nmat_given=1;
 	ref_index[0]=1.5;
+	ref_index_input[0]=1.5;
+	num_used_n=UNDEF;
 	// initialize to null to determine further whether it is initialized
 	logfile=NULL;
 	boxX=boxY=boxZ=UNDEF;
@@ -2008,6 +2031,8 @@ void InitVariables(void)
 	ScatRelation=SQ_DRAINE;
 	IntRelation=G_POINT_DIP;
 	IterMethod=IT_QMR_CS;
+	MatVecMode=MV_SYMMETRIZED;
+	form_used=false;
 	sym_type=SYM_AUTO;
 	prognosis=false;
 	maxiter=UNDEF;
@@ -2055,6 +2080,7 @@ void InitVariables(void)
 	igt_lim=UNDEF;
 	igt_eps=UNDEF;
 	InitField=IF_AUTO;
+	init_field_used=false;
 	recalc_resid=false;
 	surface=false;
 	msubInf=false;
@@ -2129,6 +2155,31 @@ void ParseParameters(const int argc,char **argv)
 
 //======================================================================================================================
 
+static void FinalizeRefractiveIndices(void)
+// interpret refractive indices after the iterative solver is known
+{
+	int i;
+
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		if (anisotropy) PrintError("Currently '-anisotr' is not supported with '-iter sbicg'");
+		if (Nmat_given>MAX_N_SHIFTED) PrintErrorHelp("Too many refractive indices (%d), maximum %d are supported for shifted "
+			"solvers. You may increase parameter MAX_N_SHIFTED in const.h and recompile.",Nmat_given,MAX_N_SHIFTED);
+		num_used_n=Nmat_given;
+		Nmat=1;
+		Ncomp=1;
+		ref_index[0]=ref_index_input[0];
+		for (i=0;i<num_used_n;i++) shifted_ref_index[i]=ref_index_input[i];
+	}
+	else {
+		if (Nmat_given>MAX_NMAT) PrintErrorHelp("Too many materials (%d), maximum %d are supported. You may "
+			"increase parameter MAX_NMAT in const.h and recompile.",Nmat_given,MAX_NMAT);
+		Nmat=Nmat_given;
+		for (i=0;i<Nmat_given;i++) ref_index[i]=ref_index_input[i];
+	}
+}
+
+//======================================================================================================================
+
 void VariablesInterconnect(void)
 // finish parameters initialization based on their interconnections
 {
@@ -2159,6 +2210,7 @@ void VariablesInterconnect(void)
 		prop_0[0]=prop_0[1]=0;
 		prop_0[2]=1;
 	}
+	FinalizeRefractiveIndices();
 	// parameter interconnections
 	if (false) { // left for future developments - put here options which rely on symmetry
 		reduced_FFT=false;
@@ -2182,6 +2234,8 @@ void VariablesInterconnect(void)
 	if (igt_eps==UNDEF) igt_eps=iter_eps;
 	// default polarizability formulation depends on rect_dip
 	if (PolRelation==(enum pol)UNDEF) PolRelation = rectDip ? POL_CLDR : POL_LDR;
+	if (IterMethod==IT_SHIFTED_BICG_CS && PolRelation==POL_CLDR)
+		PrintError("Currently '-pol cldr' is not supported with '-iter sbicg'");
 	// parameter incompatibilities
 	if (scat_plane && yzplane) PrintError("Currently '-scat_plane' and '-yz' cannot be used together.");
 	if (orient_avg) {
@@ -2268,6 +2322,13 @@ void VariablesInterconnect(void)
 			"the x- and y-axes (but not z)");
 	}
 	InteractionRealArgs=(beamtype==B_DIPOLE); // other cases may be added here in the future (e.g. nearfields)
+	if (IterMethod==IT_SHIFTED_BICG_CS && !init_field_used) InitField=IF_ZERO;
+	if (IterMethod==IT_SHIFTED_BICG_CS && InitField!=IF_ZERO)
+		PrintError("Currently '-iter sbicg' supports only '-init_field zero'");
+	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
+		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
+	if (IterMethod==IT_SHIFTED_BICG_CS && form_used && MatVecMode!=MV_STANDARD)
+		PrintError("'-iter sbicg' supports only '-form standard'");
 #ifdef SPARSE
 	if (shape==SH_SPHERE) PrintError("Sparse mode requires shape to be read from file (-shape read ...)");
 #endif
@@ -2332,7 +2393,7 @@ void VariablesInterconnect(void)
 		UpdateSymVec(prop);
 		if (beam_asym) UpdateSymVec(beam_center);
 	}
-	ipr_required=(IterMethod==IT_BICGSTAB || IterMethod==IT_CGNR);
+	ipr_required=(IterMethod==IT_BICGSTAB || IterMethod==IT_CGNR || IterMethod==IT_SHIFTED_BICG_CS);
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * add the new iterative solver to the above line, if it requires inner product calculation during matrix-vector
 	 * multiplication (i.e. calls MatVec function with non-NULL third argument)
@@ -2365,6 +2426,15 @@ void FinalizeSymmetry(void) {
 		if (chp_type!=CHP_NONE) PrintError("Currently checkpoints can be used when internal fields are calculated only "
 			"once, i.e. for a single incident polarization");
 	}
+}
+
+//======================================================================================================================
+
+void BuildShiftedDirectoryName(const int idx,const char *base_dir,char *out,const size_t out_size)
+// build output subdirectory name for the given refractive index in Shifted BiCG CS mode
+{
+	SnprintfErr(ONE_POS,out,out_size,"%s/m%.10g_%.10g",
+		base_dir,creal(shifted_ref_index[idx]),cimag(shifted_ref_index[idx]));
 }
 
 //======================================================================================================================
@@ -2406,7 +2476,11 @@ void DirectoryLog(const int argc,char **argv)
 		 * relevant buffers (for filenames or messages).
 		 */
 		static char sbuffer[MAX_LINE];
-		sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,creal(ref_index[0]));
+		if(IterMethod!=IT_SHIFTED_BICG_CS)
+			sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,creal(ref_index[0]));
+		else
+			sprintf(sbuffer,"%s%03i_%s_g%i_m"GFORM_RI_DIRNAME"-"GFORM_RI_DIRNAME,run_name,Nexp,shapename,boxX,
+					creal(shifted_ref_index[0]),creal(shifted_ref_index[num_used_n-1]));
 #ifdef PARALLEL
 		// add PBS, SGE or SLURM job id to the directory name if available
 		if ((ptmp=getenv("PBS_JOBID"))!=NULL || (ptmp=getenv("JOB_ID"))!=NULL || (ptmp=getenv("SLURM_JOBID"))!=NULL) {
@@ -2421,6 +2495,13 @@ void DirectoryLog(const int argc,char **argv)
 	if (IFROOT) {
 		MkDirErr(directory,ONE_POS);
 		PRINTFB("all data is saved in '%s'\n",directory);
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
+			char shifted_dir[MAX_DIRNAME];
+			for (i=0;i<num_used_n;i++) {
+				BuildShiftedDirectoryName(i,directory,shifted_dir,MAX_DIRNAME);
+				MkDirErr(shifted_dir,ONE_POS);
+			}
+		}
 	}
 	// make logname; do it for all processors to enable additional logging in LogError
 	if (IFROOT) SnprintfErr(ONE_POS,logfname,MAX_FNAME,"%s/"F_LOG,directory);
@@ -2483,7 +2564,12 @@ void PrintInfo(void)
 			"    volume fraction: specified - "GFORMDEF", actual - "GFORMDEF"\n",gr_mat+1,gr_N,gr_d,gr_vf,gr_vf_real);
 #endif // SPARSE
 		fprintf(logfile,"box dimensions: %ix%ix%i\n",boxX,boxY,boxZ);
-		if (anisotropy) {
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
+			if (num_used_n==1) fprintf(logfile,"shifted refractive index: "CFORM"\n",REIM(shifted_ref_index[0]));
+			else fprintf(logfile,"shifted refractive indices: first "CFORM", last "CFORM" (%d total)\n",
+				REIM(shifted_ref_index[0]),REIM(shifted_ref_index[num_used_n-1]),num_used_n);
+		}
+		else if (anisotropy) {
 			fprintf(logfile,"refractive index (diagonal elements of the tensor):\n");
 			if (Nmat==1) fprintf(logfile,"    "CFORM3V"\n",REIM3V(ref_index));
 			else {
@@ -2659,7 +2745,14 @@ void PrintInfo(void)
 			case IT_CSYM: fprintf(logfile,"CSYM\n"); break;
 			case IT_QMR_CS: fprintf(logfile,"QMR (complex symmetric)\n"); break;
 			case IT_QMR_CS_2: fprintf(logfile,"2-term QMR (complex symmetric)\n"); break;
+			case IT_SHIFTED_BICG_CS: fprintf(logfile,"Shifted BiCG (complex symmetric)\n"); break;
 		}
+		if (IterMethod==IT_SHIFTED_BICG_CS)
+			fprintf(logfile,"Linear-system formulation: shifted standard\n");
+		else if (MatVecMode==MV_STANDARD)
+			fprintf(logfile,"Linear-system formulation: standard\n");
+		else
+			fprintf(logfile,"Linear-system formulation: symmetrized\n");
 		/* TO ADD NEW ITERATIVE SOLVER
 		 * add a case above in the alphabetical order, analogous to the ones already present. The variable parts of the
 		 * case are descriptor, defined in const.h, and its plain-text description (to be shown in log).

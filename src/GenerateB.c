@@ -32,6 +32,7 @@
 #include "param.h"
 #include "vars.h"
 // system headers
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdlib.h> // for abs()
 #include <string.h>
@@ -86,7 +87,7 @@ void InitBeam(void)
 // initialize beam; produce description string
 {
 	double w0; // beam width
-	const char *tmp_str; // temporary string
+	const char *tmp_str=""; // temporary string
 	/* TO ADD NEW BEAM
 	 * Add here all intermediate variables, which are used only inside this function.
 	 */

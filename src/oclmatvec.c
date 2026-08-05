@@ -56,6 +56,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
              doublecomplex * restrict resultvec, // the result vector
              double *inprod,         // the resulting inner product
              const bool her,         // whether Hermitian transpose of the matrix is used
+             const enum matvec_mode mode,
              TIME_TYPE *timing,      // this variable is incremented by total time
              TIME_TYPE *comm_timing) // this variable is incremented by communication time
 /* This function implements matrix-vector product. If we want to calculate the inner product as well, we pass 'inprod'
@@ -67,11 +68,24 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
+	const cl_kernel arith1_kernel = (mode==MV_SYMMETRIZED) ? clarith1 : clarith1_raw;
+	const cl_kernel arith5_kernel = mode==MV_SYMMETRIZED ? clarith5 :
+		(mode==MV_STANDARD ? clarith5_standard : clarith5_raw);
 
-	/* A = I + S.D.S
+	/* MV_SYMMETRIZED:
+	 * A = I + S.D.S
 	 * S = sqrt(C)
 	 * A.x = x + S.D.(S.x)
 	 * A(H).x = x + (S(T).D(T).S(T).x(*))(*)
+	 *
+	 * MV_INTERACTION:
+	 * A = D
+	 * A.x = D.x
+	 * A(H).x = (D(T).x(*))(*)
+	 *
+	 * MV_STANDARD:
+	 * A = D + C^(-1)
+	 *
 	 * C,S - diagonal => symmetric
 	 * (!! will change if tensor (non-diagonal) polarizability is used !!)
 	 * D - symmetric except for interactions which break the reciprocity of the Green's tensor (none currently)
@@ -132,7 +146,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	// setting (buf)Xmatrix with zeros (on device)
 	CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufXmatrix));
 	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&xmsize,NULL,0,NULL,NULL));
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith1,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,arith1_kernel,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
 	// FFT X
 	fftX(FFT_FORWARD); // fftX (buf)Xmatrix
 
@@ -179,7 +193,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 
 	// FFT-X back the result
 	fftX(FFT_BACKWARD); // fftX (buf)Xmatrix
-	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clarith5,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,arith5_kernel,1,NULL,&local_nvoid_Ndip,NULL,0,NULL,NULL));
 	if (ipr) {
 		/* calculating inner product in OpenCL is more complicated than usually. The norm for each element is calculated
 		 * inside GPU, but the sum is taken by CPU afterwards. Hence, additional large buffers are required.

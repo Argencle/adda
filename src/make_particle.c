@@ -1370,9 +1370,17 @@ void InitShape(void)
 	else sizename=""; // redundant initialization to remove warnings
 	// calculate default dpl - 10*sqrt(max(|m|)); for anisotropic each component is considered separately
 	tmp2=0;
-	for (i=0;i<Ncomp*Nmat;i++) {
-		tmp1=cAbs2(ref_index[i]);
-		if (tmp2<tmp1) tmp2=tmp1;
+	if (IterMethod==IT_SHIFTED_BICG_CS) {
+		for (i=0;i<num_used_n;i++) {
+			tmp1=cAbs2(shifted_ref_index[i]);
+			if (tmp2<tmp1) tmp2=tmp1;
+		}
+	}
+	else {
+		for (i=0;i<Ncomp*Nmat;i++) {
+			tmp1=cAbs2(ref_index[i]);
+			if (tmp2<tmp1) tmp2=tmp1;
+		}
 	}
 	dpl_def=10*sqrt(tmp2);
 	// initialize relative voxel sizes
@@ -1976,11 +1984,14 @@ void InitShape(void)
 	}
 #endif
 	// check if enough refractive indices or extra
+	if (IterMethod==IT_SHIFTED_BICG_CS && Nmat_need>1)
+		PrintError("Currently '-iter sbicg' supports only homogeneous particles, but shape '%s' requires %d material "
+			"domains",shapename,Nmat_need);
 	if (Nmat<Nmat_need) {
 		if (prognosis) small_Nmat=Nmat;
 		else PrintError("Only %d refractive indices are given. %d are required",Nmat,Nmat_need);
 	}
-	else if (Nmat>Nmat_need)
+	else if (Nmat>Nmat_need && IterMethod!=IT_SHIFTED_BICG_CS)
 		LogWarning(EC_INFO,ONE_POS,"More refractive indices are given (%d) than actually used (%d)",Nmat,Nmat_need);
 	Nmat=Nmat_need;
 

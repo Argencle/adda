@@ -129,6 +129,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
              doublecomplex * restrict resultvec, // the result vector
              double *inprod,         // the resulting inner product
              const bool her,         // whether Hermitian transpose of the matrix is used
+             const enum matvec_mode mode,
              TIME_TYPE *timing,      // this variable is incremented by total time
              TIME_TYPE *comm_timing) // this variable is incremented by communication time
 /* This function implements matrix-vector product. If we want to calculate the inner product as well, we pass 'inprod'
@@ -152,10 +153,21 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		t_TYZf,t_TYZb,t_Arithm,t_FFT,t_Comm;
 #endif
 
-	/* A = I + S.D.S
+	/* MV_SYMMETRIZED:
+	 * A = I + S.D.S
 	 * S = sqrt(C)
 	 * A.x = x + S.D.(S.x)
 	 * A(H).x = x + (S(T).D(T).S(T).x(*))(*)
+	 *
+	 * MV_INTERACTION:
+	 * A = D
+	 * A.x = D.x
+	 * A(H).x = (D(T).x(*))(*)
+	 *
+	 * MV_STANDARD:
+	 * A = D + C^(-1)
+	 * A.x = D.x + C^(-1).x
+	 *
 	 * C,S - diagonal => symmetric
 	 * (!! will change if tensor (non-diagonal) polarizability is used !!)
 	 * D - symmetric except for interactions which break the reciprocity of the Green's tensor (none currently)
@@ -202,12 +214,17 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	if (her) nConj(argvec); // conjugated back afterwards
 
 	for (i=0;i<local_nvoid_Ndip;i++) {
-		// fill grid with argvec*sqrt_cc
 		j=3*i;
-		mat=material[i];
 		index=IndexXmatrix(position[j],position[j+1],position[j+2]);
-		// Xmat=cc_sqrt*argvec
-		for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=cc_sqrt[mat][Xcomp]*argvec[j+Xcomp];
+		if (mode!=MV_SYMMETRIZED) {
+			// Xmat=argvec
+			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=argvec[j+Xcomp];
+		}
+		else {
+			mat=material[i];
+			// Xmat=cc_sqrt*argvec
+			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=cc_sqrt[mat][Xcomp]*argvec[j+Xcomp];
+		}
 	}
 #ifdef PRECISE_TIMING
 	GET_SYSTEM_TIME(tvp+1);
@@ -350,10 +367,18 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	// fill resultvec
 	for (i=0;i<local_nvoid_Ndip;i++) {
 		j=3*i;
-		mat=material[i];
 		index=IndexXmatrix(position[j],position[j+1],position[j+2]);
-		for (Xcomp=0;Xcomp<3;Xcomp++) // result=argvec+cc_sqrt*Xmat
-			resultvec[j+Xcomp]=argvec[j+Xcomp]+cc_sqrt[mat][Xcomp]*Xmatrix[index+Xcomp*local_Nsmall];
+		if (mode!=MV_SYMMETRIZED) {
+			for (Xcomp=0;Xcomp<3;Xcomp++) {
+				resultvec[j+Xcomp]=Xmatrix[index+Xcomp*local_Nsmall];
+				if (mode==MV_STANDARD) resultvec[j+Xcomp]+=argvec[j+Xcomp]/cc[material[i]][Xcomp];
+			}
+		}
+		else {
+			mat=material[i];
+			for (Xcomp=0;Xcomp<3;Xcomp++) // result=argvec+cc_sqrt*Xmat
+				resultvec[j+Xcomp]=argvec[j+Xcomp]+cc_sqrt[mat][Xcomp]*Xmatrix[index+Xcomp*local_Nsmall];
+		}
 		// norm is unaffected by conjugation, hence can be computed here
 		if (ipr) *inprod+=cvNorm2(resultvec+j);
 	}
@@ -434,6 +459,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
              doublecomplex * restrict resultvec, // the result vector
              double *inprod,         // the resulting inner product
              const bool her,         // whether Hermitian transpose of the matrix is used
+             const enum matvec_mode mode,
              TIME_TYPE *timing,      // this variable is incremented by total time
              TIME_TYPE *comm_timing) // this variable is incremented by communication time
 {
@@ -442,8 +468,11 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 
 	TIME_TYPE tstart=GET_TIME();
 	if (her) nConj(argvec);
-	// TODO: can be replaced by nMult_mat
-	for (j=0; j<local_nvoid_Ndip; j++) CcMul(argvec,arg_full+3*local_nvoid_d0,j);
+	if (mode==MV_SYMMETRIZED) {
+		// TODO: can be replaced by nMult_mat
+		for (j=0; j<local_nvoid_Ndip; j++) CcMul(argvec,arg_full+3*local_nvoid_d0,j);
+	}
+	else for (j=0; j<local_nRows; j++) arg_full[3*local_nvoid_d0+j]=argvec[j];
 #	ifdef PARALLEL
 	AllGather(NULL,arg_full,cmplx3_type,comm_timing);
 #	endif
@@ -452,8 +481,17 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		cvInit(resultvec+i3);
 		for (j=0; j<nvoid_Ndip; j++) AijProd(arg_full,resultvec,i,j);
 	}
-	// TODO: can be replaced by a specially designed function from linalg.c
-	for (i=0; i<local_nvoid_Ndip; i++) DiagProd(argvec,resultvec,i);
+	if (mode==MV_SYMMETRIZED) {
+		// TODO: can be replaced by a specially designed function from linalg.c
+		for (i=0; i<local_nvoid_Ndip; i++) DiagProd(argvec,resultvec,i);
+	}
+	else for (i=0;i<local_nvoid_Ndip;i++) {
+		i3=3*i;
+		for (j=0;j<3;j++) {
+			resultvec[i3+j] = -resultvec[i3+j];
+			if (mode==MV_STANDARD) resultvec[i3+j] += argvec[i3+j]/cc[material[i]][j];
+		}
+	}
 	if (her) {
 		nConj(resultvec);
 		nConj(argvec);

@@ -108,6 +108,8 @@ the compilation may fail or produce wrong results. If you still want to try, ena
 #define BOX_MAX USHRT_MAX
 
 // sizes of some arrays
+// TODO: the following two need to be combined into one parameter
+#define MAX_N_SHIFTED    1000  // maximum number of different refractive indices in shifted solver
 #define MAX_NMAT         60  // maximum number of different refractive indices (<256)
 #define MAX_N_SH_PARMS   MAX(25,MAX_NMAT+1) // maximum number of shape parameters (upper limit due to ONION_ELL)
 #define MAX_N_BEAM_PARMS 10 // maximum number of beam parameters
@@ -144,8 +146,8 @@ the compilation may fail or produce wrong results. If you still want to try, ena
 #define MIN_TERM_WIDTH 20 // ADDA never takes value less than that from environmental variables
 
 // formats for outputs of float values
-#define EFORM "%.10E"             // fixed width
-#define GFORM "%.10g"             // variable width (showing significant digits)
+#define EFORM "%.16E"             // fixed width
+#define GFORM "%.16g"             // variable width (showing significant digits)
 #define GFORMDEF "%g"             // default output for non-precise values
 #define GFORM_FULL "%.16g"        // full precision (for some debugging applications)
 #define GFORM_DEBUG "%.2g"        // for debug and error output
@@ -262,10 +264,17 @@ enum iter { // iterative methods
 	IT_CGNR,     // Conjugate Gradient for Normalized equations minimizing Residual norm
 	IT_CSYM,     // Algorithm CSYM
 	IT_QMR_CS,   // Quasi-minimal residual for Complex-Symmetric matrices
-	IT_QMR_CS_2  // 2-term QMR (better roundoff properties)
+	IT_QMR_CS_2,  // 2-term QMR (better roundoff properties)
+	IT_SHIFTED_BICG_CS // Shifted BiCG for Complex-Symmetric matrices
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * add an identifier starting with 'IT_' and a descriptive comment to this list in the alphabetical order.
 	 */
+};
+
+enum matvec_mode { // matrix-vector product mode
+	MV_INTERACTION, // raw interaction operator: D.x
+	MV_STANDARD,    // standard system operator: D.x + C^(-1).x
+	MV_SYMMETRIZED  // symmetrized system operator: x + S.D.S.x
 };
 
 enum Eftype { // type of E field calculation

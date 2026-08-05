@@ -27,6 +27,7 @@
 #include "Romberg.h"
 #include "timing.h"
 #include "vars.h"
+#include "param.h"
 // system headers
 #include <math.h>
 #include <stdlib.h>
@@ -57,16 +58,25 @@ doublecomplex * restrict EyzplX, * restrict EyzplY; // same for scattering in yz
 double dtheta_deg,dtheta_rad; // delta theta in degrees and radians
 doublecomplex * restrict ampl_alphaX,* restrict ampl_alphaY; // amplitude matrix for different values of alpha
 double * restrict muel_alpha; // mueller matrix for different values of alpha
+doublecomplex **shiftedEplaneX_store, **shiftedEplaneY_store;
+doublecomplex **shiftedEyzplX_store, **shiftedEyzplY_store;
+doublecomplex **shiftedEgridX_store, **shiftedEgridY_store;
+doublecomplex **shiftedAmplAlphaX_store, **shiftedAmplAlphaY_store;
+double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 
 // used in crosssec.c
 doublecomplex * restrict E_ad; // complex field E, calculated for alldir
 double * restrict E2_alldir; // square of E (scaled with msub, so ~ Poynting vector or dC/dOmega), calculated for alldir
-doublecomplex cc[MAX_NMAT][3]; // couple constants
 #ifndef SPARSE
 doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ; // arrays of exponents along 3 axes (for calc_field)
 #endif
 // used in iterative.c
 doublecomplex *rvec;                 // current residual
+doublecomplex *vcur;				 // current basis vector in the Lanczos Process
+doublecomplex *vpr;					 // previous basis vector in the Lanczos Process
+doublecomplex *vtmp;				 // temporary vector in the Lanczos Process
+doublecomplex *vzeros;
+doublecomplex *vnext;				 // next basis vector in the Lanczos Process
 doublecomplex * restrict Avecbuffer; // used to hold the result of matrix-vector products
 // auxiliary vectors, used in some iterative solvers (with more meaningful names)
 doublecomplex * restrict vec1,* restrict vec2,* restrict vec3,* restrict vec4;
@@ -291,6 +301,7 @@ static const struct draine_coefficients draine_precalc_data_array[] = {
 int CalculateE(enum incpol which,enum Eftype type);
 bool TestExtendThetaRange(void);
 void MuellerMatrix(void);
+void RestoreShiftedScatFields(int idx);
 void SaveMuellerAndCS(double * restrict in);
 
 //======================================================================================================================
@@ -587,7 +598,6 @@ static void InitCC(const enum incpol which)
 {
 	int i,j;
 	doublecomplex m;
-
 	for(i=0;i<Nmat;i++) {
 		CoupleConstant(ref_index+Ncomp*i,which,cc[i]);
 		for(j=0;j<3;j++) cc_sqrt[i][j]=csqrt(cc[i][j]);
@@ -603,8 +613,23 @@ static void InitCC(const enum incpol which)
 	/* this is done here, since InitCC can be run between different runs of the iterative solver; write is blocking to
 	 * ensure completion before function end
 	 */
-	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc_sqrt,CL_TRUE,0,sizeof(cc_sqrt),cc_sqrt,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc,CL_TRUE,0,(size_t)Nmat * sizeof(*cc),cc,0,NULL,NULL));
+	CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufcc_sqrt,CL_TRUE,0,(size_t)Nmat * sizeof(*cc_sqrt),cc_sqrt,0,NULL,NULL));
 #endif
+}
+
+//======================================================================================================================
+
+static void InitShiftedCC(const int idx,const enum incpol which)
+// calculate scalar material data for one shifted system
+{
+	int j;
+	doublecomplex m=shifted_ref_index[idx];
+
+	CoupleConstant(&m,which,shifted_cc[idx]);
+	for(j=0;j<3;j++) shifted_cc_sqrt[idx][j]=csqrt(shifted_cc[idx][j]);
+	shifted_chi_inv[idx][0]=FOUR_PI/(dipvol*(m*m-1));
+	shifted_chi_inv[idx][2]=shifted_chi_inv[idx][1]=shifted_chi_inv[idx][0];
 }
 
 //======================================================================================================================
@@ -625,7 +650,15 @@ static void calculate_one_orientation(double * restrict res)
 		PRINTFB("\nhere we go, calc Y\n\n");
 		if (!orient_avg) fprintf(logfile,"\nhere we go, calc Y\n\n");
 	}
-	InitCC(INCPOL_Y);
+	if (IterMethod!=IT_SHIFTED_BICG_CS) {
+		InitCC(INCPOL_Y);
+	}
+	else {
+		for(int i=0;i<num_used_n;i++) {
+			InitShiftedCC(i,INCPOL_Y);
+		}
+	}
+
 	// symR implies that prop is along z (in particle RF). Then it is fine for both definitions of scattering angles
 	if (symR && !scat_grid) {
 		if (CalculateE(INCPOL_Y,CE_PARPER)==CHP_EXIT) return;
@@ -641,7 +674,14 @@ static void calculate_one_orientation(double * restrict res)
 			PRINTFB("\nhere we go, calc X\n\n");
 			if (!orient_avg) fprintf(logfile,"\nhere we go, calc X\n\n");
 		}
-		if (PolRelation==POL_LDR && !avg_inc_pol) InitCC(INCPOL_X);
+		if (PolRelation==POL_LDR && !avg_inc_pol) {
+			if (IterMethod!=IT_SHIFTED_BICG_CS) {
+				InitCC(INCPOL_X);
+			}
+			else for(int i=0;i<num_used_n;i++) {
+				InitShiftedCC(i,INCPOL_X);
+			}
+		}
 		/* TO ADD NEW POLARIZABILITY FORMULATION
 		 * If new formulation depends on the incident polarization (unlikely) update the test above.
 		 */
@@ -649,13 +689,43 @@ static void calculate_one_orientation(double * restrict res)
 		if (CalculateE(INCPOL_X,CE_NORMAL)==CHP_EXIT) return;
 	}
 	D("CalculateE finished");
-	MuellerMatrix();
+	if (IterMethod!=IT_SHIFTED_BICG_CS) MuellerMatrix();
+	else if (!orient_avg) {
+		const char *directoryOld = directory; // store the original address of the folder for second call of CalculateE
+		for(int i=0;i<num_used_n;i++){
+			char shifted_dir[MAX_DIRNAME];
+			BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+			directory=shifted_dir;
+			RestoreShiftedScatFields(i);
+			MuellerMatrix();
+		}
+		directory=directoryOld;
+	}
 	D("MuellerMatrix finished");
 	if (IFROOT && orient_avg) {
+		const size_t orient_dim=block_theta+2;
+
 		tstart=GET_TIME();
-		if (store_mueller) PRINTFB("\nError of alpha integration (Mueller) is "GFORMDEF"\n",
-			Romberg1D(parms_alpha,block_theta,muel_alpha,res+2));
-		memcpy(res,muel_alpha-2,2*sizeof(double));
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
+			const char *directoryOld=directory;
+
+			for (int i=0;i<num_used_n;i++) {
+				char shifted_dir[MAX_DIRNAME];
+				BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+				directory=shifted_dir;
+				RestoreShiftedScatFields(i);
+				MuellerMatrix();
+				if (store_mueller) PRINTFB("\nError of alpha integration (Mueller) is "GFORMDEF"\n",
+					Romberg1D(parms_alpha,block_theta,muel_alpha,res+i*orient_dim+2));
+				memcpy(res+i*orient_dim,muel_alpha-2,2*sizeof(double));
+			}
+			directory=directoryOld;
+		}
+		else {
+			if (store_mueller) PRINTFB("\nError of alpha integration (Mueller) is "GFORMDEF"\n",
+				Romberg1D(parms_alpha,block_theta,muel_alpha,res+2));
+			memcpy(res,muel_alpha-2,2*sizeof(double));
+		}
 		D("Integration over alpha completed on root");
 		Timing_Integration += GET_TIME() - tstart;
 	}
@@ -678,10 +748,18 @@ static double orient_integrand(int beta_i,int gamma_i, double * restrict res)
 
 //======================================================================================================================
 
+doublecomplex ** malloc_func(const size_t rows, const size_t columns)
+{
+	doublecomplex **ptr=(doublecomplex **)malloc(columns*sizeof(doublecomplex *));
+	doublecomplex *p=malloc(rows*columns*sizeof(doublecomplex));
+	for(size_t i=0;i<columns;i++) ptr[i]=&p[i*rows];
+	return ptr;
+}
+
 static void AllocateEverything(void)
 // allocates a lot of arrays and performs memory analysis
 {
-	double tmp;
+	double tmp, tmp2, tmp3;
 	size_t temp_int;
 	double memmax;
 
@@ -743,6 +821,31 @@ static void AllocateEverything(void)
 			}
 			memory+=2*tmp;
 			break;
+		case IT_SHIFTED_BICG_CS:
+			tmp2=sizeof(doublecomplex)*(double)num_used_n;
+			tmp3=sizeof(doublecomplex)*(double)(local_nRows*num_used_n);
+
+			pArray=malloc_func(local_nRows,num_used_n);
+			xArray=malloc_func(local_nRows,num_used_n);
+			memory+=2*tmp3;
+
+			MALLOC_VECTOR(vcur,complex,local_nRows,ALL);
+			MALLOC_VECTOR(vpr,complex,local_nRows,ALL);
+			MALLOC_VECTOR(vtmp,complex,local_nRows,ALL);
+			MALLOC_VECTOR(vnext,complex,local_nRows,ALL);
+			memory+=4*tmp;
+
+			MALLOC_VECTOR(lArray,complex,num_used_n,ALL);
+			MALLOC_VECTOR(dArray,complex,num_used_n,ALL);
+			MALLOC_VECTOR(sigmaArray,complex,num_used_n,ALL);
+			MALLOC_VECTOR(uArray,complex,num_used_n,ALL);
+			memory+=4*tmp2;
+
+			inprodRp1Array=malloc(num_used_n*sizeof(double));
+			memory+=sizeof(double)*(double)num_used_n;
+			continue_flag=malloc(num_used_n*sizeof(bool));
+			memory+=sizeof(bool)*(double)num_used_n;
+
 	}
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * Add here a case corresponding to the new iterative solver. If the new iterative solver requires any extra vectors
@@ -762,8 +865,13 @@ static void AllocateEverything(void)
 			temp_int=tmp;
 			MALLOC_VECTOR(EyzplX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EyzplY,complex,temp_int,ALL);
+			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+				shiftedEyzplX_store=malloc_func(temp_int,num_used_n);
+				shiftedEyzplY_store=malloc_func(temp_int,num_used_n);
+			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 	}
 	if (scat_plane) {
 		tmp=2*(double)nTheta;
@@ -772,8 +880,13 @@ static void AllocateEverything(void)
 			temp_int=tmp;
 			MALLOC_VECTOR(EplaneX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EplaneY,complex,temp_int,ALL);
+			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+				shiftedEplaneX_store=malloc_func(temp_int,num_used_n);
+				shiftedEplaneY_store=malloc_func(temp_int,num_used_n);
+			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 	}
 	if (all_dir) {
 		ReadAlldirParms(alldir_parms);
@@ -798,8 +911,13 @@ static void AllocateEverything(void)
 			temp_int=tmp;
 			MALLOC_VECTOR(EgridX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EgridY,complex,temp_int,ALL);
+			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+				shiftedEgridX_store=malloc_func(temp_int,num_used_n);
+				shiftedEgridY_store=malloc_func(temp_int,num_used_n);
+			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
 		if (phi_integr && IFROOT) {
 			tmp=16*(double)angles.phi.N;
 			if (!prognosis) {
@@ -812,6 +930,12 @@ static void AllocateEverything(void)
 		}
 	}
 	if (orient_avg) {
+		const size_t orient_dim=block_theta+2;
+		size_t orient_count;
+
+		if (IterMethod==IT_SHIFTED_BICG_CS) orient_count=num_used_n;
+		else orient_count=1;
+
 		tmp=2*((double)nTheta)*alpha_int.N;
 		if (!prognosis) {
 			// this covers these 2 and next 2 malloc calls
@@ -820,18 +944,30 @@ static void AllocateEverything(void)
 				temp_int=tmp;
 				MALLOC_VECTOR(ampl_alphaX,complex,temp_int,ONE);
 				MALLOC_VECTOR(ampl_alphaY,complex,temp_int,ONE);
+				if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+					shiftedAmplAlphaX_store=malloc_func(temp_int,num_used_n);
+					shiftedAmplAlphaY_store=malloc_func(temp_int,num_used_n);
+				}
 			}
 		}
 		memory += 2*tmp*sizeof(doublecomplex);
-		if (IFROOT) {
-			if (!prognosis) {
-				MALLOC_VECTOR(muel_alpha,double,block_theta*alpha_int.N+2,ONE);
-				muel_alpha+=2;
-				MALLOC_VECTOR(out,double,block_theta+2,ONE);
+		if (store_mueller && IterMethod==IT_SHIFTED_BICG_CS && IFROOT) memory+=2*tmp*sizeof(doublecomplex)*num_used_n;
+			if (IFROOT) {
+				if (!prognosis) {
+					MALLOC_VECTOR(muel_alpha,double,block_theta*alpha_int.N+2,ONE);
+					muel_alpha+=2;
+					MALLOC_VECTOR(out,double,orient_count*orient_dim,ONE);
+					if (IterMethod==IT_SHIFTED_BICG_CS) {
+						MALLOC_VECTOR(shiftedCext_store,double,num_used_n,ONE);
+						MALLOC_VECTOR(shiftedCabs_store,double,num_used_n,ONE);
+						}
+					}
+					memory += (8*tmp+2 + orient_count*orient_dim)*sizeof(double);
+					if (IterMethod==IT_SHIFTED_BICG_CS) {
+						memory += 2*num_used_n*sizeof(double);
+					}
+				}
 			}
-			memory += (8*tmp*(1+1.0/alpha_int.N)+4)*sizeof(double);
-		}
-	}
 	/* estimate of the memory (only the fastest scaling part):
 	 * MatVec - (288+384nprocs/boxX [+192/nprocs])*Ndip
 	 *          more exactly: gridX*gridY*gridZ*(36+48nprocs/boxX [+24/nprocs]) value in [] is only for parallel mode.
@@ -915,6 +1051,21 @@ void FreeEverything(void)
 			Free_cVector(vec1);
 			Free_cVector(vec2);
 			break;
+		case IT_SHIFTED_BICG_CS:
+			free(pArray);
+			free(xArray);
+			free(inprodRp1Array);
+			free(continue_flag);
+
+			Free_cVector(lArray);
+			Free_cVector(dArray);
+			Free_cVector(sigmaArray);
+			Free_cVector(uArray);
+
+			Free_cVector(vcur);
+			Free_cVector(vpr);
+			Free_cVector(vtmp);
+			Free_cVector(vnext);
 	}
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * Add here a case corresponding to the new iterative solver. It should free the extra vectors that were allocated
@@ -923,10 +1074,22 @@ void FreeEverything(void)
 	if (yzplane) {
 		Free_cVector(EyzplX);
 		Free_cVector(EyzplY);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+			Free_general(shiftedEyzplX_store[0]);
+			Free_general(shiftedEyzplX_store);
+			Free_general(shiftedEyzplY_store[0]);
+			Free_general(shiftedEyzplY_store);
+		}
 	}
 	if (scat_plane) {
 		Free_cVector(EplaneX);
 		Free_cVector(EplaneY);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+			Free_general(shiftedEplaneX_store[0]);
+			Free_general(shiftedEplaneX_store);
+			Free_general(shiftedEplaneY_store[0]);
+			Free_general(shiftedEplaneY_store);
+		}
 	}
 	if (all_dir) {
 		Free_general(theta_int.val);
@@ -939,6 +1102,12 @@ void FreeEverything(void)
 		Free_general(angles.phi.val);
 		Free_cVector(EgridX);
 		Free_cVector(EgridY);
+		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
+			Free_general(shiftedEgridX_store[0]);
+			Free_general(shiftedEgridX_store);
+			Free_general(shiftedEgridY_store[0]);
+			Free_general(shiftedEgridY_store);
+		}
 		if (phi_integr && IFROOT) {
 			Free_general(muel_phi);
 			Free_general(muel_phi_buf);
@@ -953,12 +1122,22 @@ void FreeEverything(void)
 			if (store_mueller) {
 				Free_cVector(ampl_alphaX);
 				Free_cVector(ampl_alphaY);
+				if (IterMethod==IT_SHIFTED_BICG_CS) {
+					Free_general(shiftedAmplAlphaX_store[0]);
+					Free_general(shiftedAmplAlphaX_store);
+					Free_general(shiftedAmplAlphaY_store[0]);
+					Free_general(shiftedAmplAlphaY_store);
+				}
+				}
+				Free_general(muel_alpha-2);
+				Free_general(out);
+				if (IterMethod==IT_SHIFTED_BICG_CS) {
+					Free_general(shiftedCext_store);
+					Free_general(shiftedCabs_store);
+				}
 			}
-			Free_general(muel_alpha-2);
-			Free_general(out);
-		}
-		Free_general(alpha_int.val);
-		Free_general(beta_int.val);
+			Free_general(alpha_int.val);
+			Free_general(beta_int.val);
 		Free_general(gamma_int.val);
 	}
 #ifdef OPENCL
@@ -1006,17 +1185,39 @@ void Calculator (void)
 	if (prognosis) return;
 	// main calculation part
 	if (orient_avg) {
+		const size_t orient_dim=block_theta+2;
+		size_t orient_count;
+		int conv_comp[MAX_N_SHIFTED];
+		int conv_comp_N=0;
+
+		if (IterMethod==IT_SHIFTED_BICG_CS) {
+			orient_count=num_used_n;
+			for (int i=0;i<num_used_n;i++) conv_comp[conv_comp_N++]=i*orient_dim;
+		}
+		else orient_count=1;
+
 		if (IFROOT) {
 			SnprintfErr(ONE_POS,fname,MAX_FNAME,"%s/"F_LOG_ORAVG,directory);
 			D("Romberg2D started on root");
-			Romberg2D(parms,orient_integrand,block_theta+2,out,fname);
+			Romberg2D(parms,orient_integrand,orient_count*orient_dim,out,fname,conv_comp,conv_comp_N);
 			D("Romberg2D finished on root");
 			finish_avg=true;
-			/* first two are dummy variables; this call corresponds to one in orient_integrand by other processors;
-			 * TODO: replace by a call without unnecessary overhead
-			 */
+		/* first two are dummy variables; this call corresponds to one in orient_integrand by other processors;
+			* TODO: replace by a call without unnecessary overhead
+				*/
 			BcastOrient(&finish_avg,&finish_avg,&finish_avg);
-			SaveMuellerAndCS(out);
+			if (IterMethod==IT_SHIFTED_BICG_CS) {
+				const char *directoryOld=directory;
+
+				for (int i=0;i<num_used_n;i++) {
+					char shifted_dir[MAX_DIRNAME];
+					BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+					directory=shifted_dir;
+					SaveMuellerAndCS(out+i*orient_dim);
+				}
+				directory=directoryOld;
+			}
+			else SaveMuellerAndCS(out);
 		}
 		else while (!finish_avg) orient_integrand(0,0,NULL);
 	}

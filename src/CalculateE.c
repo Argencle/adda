@@ -26,6 +26,7 @@
 #include "Romberg.h"
 #include "timing.h"
 #include "vars.h"
+#include "param.h"
 // system headers
 #include <math.h>
 #include <stdlib.h>
@@ -39,6 +40,11 @@ extern doublecomplex * restrict EplaneX, * restrict EplaneY, * restrict EyzplX, 
 extern const double dtheta_deg,dtheta_rad;
 extern doublecomplex * restrict ampl_alphaX,* restrict ampl_alphaY;
 extern double * restrict muel_alpha;
+extern doublecomplex **shiftedEplaneX_store, **shiftedEplaneY_store;
+extern doublecomplex **shiftedEyzplX_store, **shiftedEyzplY_store;
+extern doublecomplex **shiftedEgridX_store, **shiftedEgridY_store;
+extern doublecomplex **shiftedAmplAlphaX_store, **shiftedAmplAlphaY_store;
+extern double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 // defined and initialized in crosssec.c
 extern const Parms_1D phi_sg;
 extern const double ezLab[3],exSP[3];
@@ -52,6 +58,7 @@ extern const int phi_int_type;
 // defined and initialized in timing.c
 extern TIME_TYPE Timing_EPlane,Timing_EPlaneComm,Timing_IntField,Timing_IntFieldOne,Timing_ScatQuan,Timing_IncBeam;
 extern size_t TotalEFieldPlane;
+extern doublecomplex cc[MAX_NMAT][3];
 
 // LOCAL VARIABLES
 
@@ -74,6 +81,76 @@ extern size_t TotalEFieldPlane;
 void GenerateB(enum incpol which,doublecomplex *x);
 // iterative.c
 int IterativeSolver(enum iter method,enum incpol which);
+
+//======================================================================================================================
+
+static void SaveShiftedScatFields(const int idx,const enum incpol which,const enum Eftype type)
+{
+	const size_t plane_size=2*(size_t)nTheta;
+
+	if (!IFROOT) return;
+
+	if (orient_avg) {
+		const size_t alpha_size=plane_size*alpha_int.N;
+
+		if (!store_mueller) return;
+		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedAmplAlphaX_store[idx],ampl_alphaX,
+			alpha_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedAmplAlphaY_store[idx],ampl_alphaY,
+			alpha_size*sizeof(doublecomplex));
+		return;
+	}
+
+	if (yzplane) {
+		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedEyzplX_store[idx],EyzplX,plane_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedEyzplY_store[idx],EyzplY,plane_size*sizeof(doublecomplex));
+	}
+	if (scat_plane) {
+		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedEplaneX_store[idx],EplaneX,plane_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedEplaneY_store[idx],EplaneY,plane_size*sizeof(doublecomplex));
+	}
+	if (scat_grid) {
+		const size_t grid_size=2*(size_t)angles.N;
+
+		if (which==INCPOL_X) memcpy(shiftedEgridX_store[idx],EgridX,grid_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y) memcpy(shiftedEgridY_store[idx],EgridY,grid_size*sizeof(doublecomplex));
+	}
+}
+
+//======================================================================================================================
+
+void RestoreShiftedScatFields(const int idx)
+{
+	const size_t plane_size=2*(size_t)nTheta;
+
+	if (!IFROOT) return;
+
+	if (orient_avg) {
+		const size_t alpha_size=plane_size*alpha_int.N;
+
+		muel_alpha[-2]=shiftedCext_store[idx];
+		muel_alpha[-1]=shiftedCabs_store[idx];
+		if (!store_mueller) return;
+		memcpy(ampl_alphaX,shiftedAmplAlphaX_store[idx],alpha_size*sizeof(doublecomplex));
+		memcpy(ampl_alphaY,shiftedAmplAlphaY_store[idx],alpha_size*sizeof(doublecomplex));
+		return;
+	}
+
+	if (yzplane) {
+		memcpy(EyzplX,shiftedEyzplX_store[idx],plane_size*sizeof(doublecomplex));
+		memcpy(EyzplY,shiftedEyzplY_store[idx],plane_size*sizeof(doublecomplex));
+	}
+	if (scat_plane) {
+		memcpy(EplaneX,shiftedEplaneX_store[idx],plane_size*sizeof(doublecomplex));
+		memcpy(EplaneY,shiftedEplaneY_store[idx],plane_size*sizeof(doublecomplex));
+	}
+	if (scat_grid) {
+		const size_t grid_size=2*(size_t)angles.N;
+
+		memcpy(EgridX,shiftedEgridX_store[idx],grid_size*sizeof(doublecomplex));
+		memcpy(EgridY,shiftedEgridY_store[idx],grid_size*sizeof(doublecomplex));
+	}
+}
 
 //======================================================================================================================
 
@@ -874,17 +951,64 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 	// return if checkpoint (normal) occurred
 	if (exit_status==CHP_EXIT) return CHP_EXIT;
 
-	if (yzplane) CalcEplaneYZ(which,type);     // generally plane of incPolY and prop
-	if (scat_plane) CalcScatPlane(which,type); // the scattering plane through ez,prop,incPolX - xz by default
-	// Calculate the scattered field for the whole solid-angle
-	if (all_dir) CalcAlldir();
-	// Calculate the scattered field on the given grid of angles
-	if (scat_grid) CalcScatGrid(which);
-	// Calculate integral scattering quantities (cross sections, asymmetry parameter, electric forces)
-	if (calc_Cext || calc_Cabs || calc_Csca || calc_asym || calc_mat_force) CalcIntegralScatQuantities(which);
-	// saves internal fields and/or dipole (voxel) polarizations to text file
-	if (store_int_field) StoreIntFields(which);
-	if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");
+	if (IterMethod!=IT_SHIFTED_BICG_CS) {
+		if (yzplane) CalcEplaneYZ(which,type);     // generally plane of incPolY and prop
+		if (scat_plane) CalcScatPlane(which,type); // the scattering plane through ez,prop,incPolX - xz by default
+		// Calculate the scattered field for the whole solid-angle
+		if (all_dir) CalcAlldir();
+		// Calculate the scattered field on the given grid of angles
+		if (scat_grid) CalcScatGrid(which);
+		// Calculate integral scattering quantities (cross sections, asymmetry parameter, electric forces)
+		if (calc_Cext || calc_Cabs || calc_Csca || calc_asym || calc_mat_force) CalcIntegralScatQuantities(which);
+		// saves internal fields and/or dipole (voxel) polarizations to text file
+		if (store_int_field) StoreIntFields(which);
+		if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");
+	} else {
+		const char *directoryOld = directory; // store the original address of the folder for second call of CalculateE
+		for(int i=0;i<num_used_n;i++) {
+			char shifted_dir[MAX_DIRNAME];
+			BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
+			directory=shifted_dir; // change the folder
+			nCopy(pvec,xArray[i]); // copy polarization to pvec for each refractive index
+			if (yzplane) CalcEplaneYZ(which,type);     // generally plane of incPolY and prop
+			if (scat_plane) CalcScatPlane(which,type); // the scattering plane through ez,prop,incPolX - xz by default
+			// Calculate the scattered field for the whole solid-angle
+			if (all_dir) CalcAlldir();
+			// Calculate the scattered field on the given grid of angles
+			if (scat_grid) CalcScatGrid(which);
+			SaveShiftedScatFields(i,which,type);
+			// Calculate integral scattering quantities (cross sections, asymmetry parameter, electric forces)
+			ref_index[0]=shifted_ref_index[i];
+			for (int j=0;j<3;j++) {
+				cc[0][j]=shifted_cc[i][j];
+				cc_sqrt[0][j]=shifted_cc_sqrt[i][j];
+				chi_inv[0][j]=shifted_chi_inv[i][j];
+			}
+			if (calc_Cext || calc_Cabs || calc_Csca || calc_asym || calc_mat_force) {
+				if (orient_avg && IFROOT && which==INCPOL_X) {
+					muel_alpha[-2]=shiftedCext_store[i];
+					muel_alpha[-1]=shiftedCabs_store[i];
+				}
+				CalcIntegralScatQuantities(which);
+				if (orient_avg && IFROOT) {
+					shiftedCext_store[i]=muel_alpha[-2];
+					shiftedCabs_store[i]=muel_alpha[-1];
+				}
+			}
+			// saves internal fields and/or dipole polarizations to text file
+			if (store_int_field) {
+				// copy polarization to xvec for each refractive index
+				// TODO: polarization->electric field
+				nCopy(xvec,xArray[i]);
+				StoreIntFields(which);
+			}
+			if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");
+			directory=directoryOld; // back to the original folder
+		}
+	}
+
+
+
 	return 0;
 }
 

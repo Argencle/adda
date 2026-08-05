@@ -39,9 +39,10 @@
  */
 cl_context context;
 cl_command_queue command_queue;
-cl_kernel clarith1,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clzero,clinprod,clnConj,cltransposeof,
-	cltransposeob,cltransposeofR;
-cl_mem bufXmatrix,bufmaterial,bufposition,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
+cl_kernel clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,clarith5_standard,
+	clzero,clinprod,
+	clnConj,cltransposeof,cltransposeob,cltransposeofR;
+cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
 
 /* defines if bufargvec and bufresultvec are to be uploaded in the beginning of MatVec
@@ -53,6 +54,11 @@ bool bufupload=true;
 cl_mem buftmp;  // temporary buffer for dot products and Norm (as required by clBLAS library)
 cl_mem bufrvec; // buffer used in iterative solver
 cl_mem bufxvec; // buffer used in iterative solver
+cl_mem bufvpr;  // buffers used in Shifted BiCG CS solver
+cl_mem bufvtmp;
+cl_mem bufvnext;
+cl_mem bufpArray;
+cl_mem bufxArray;
 #endif
 
 cl_mem bufRmatrix,bufslicesR,bufslicesR_tr; //for surface
@@ -442,6 +448,8 @@ void oclinit(void)
 	CL_CH_ERR(err);
 	clarith1=clCreateKernel(program,"arith1",&err);
 	CL_CH_ERR(err);
+	clarith1_raw=clCreateKernel(program,"arith1_raw",&err);
+	CL_CH_ERR(err);
 	clarith2=clCreateKernel(program,"arith2",&err);
 	CL_CH_ERR(err);
 	clarith3=clCreateKernel(program,"arith3",&err);
@@ -449,6 +457,10 @@ void oclinit(void)
 	clarith4=clCreateKernel(program,"arith4",&err);
 	CL_CH_ERR(err);
 	clarith5=clCreateKernel(program,"arith5",&err);
+	CL_CH_ERR(err);
+	clarith5_raw=clCreateKernel(program,"arith5_raw",&err);
+	CL_CH_ERR(err);
+	clarith5_standard=clCreateKernel(program,"arith5_standard",&err);
 	CL_CH_ERR(err);
 	clnConj=clCreateKernel(program,"nConj",&err);
 	CL_CH_ERR(err);
@@ -536,10 +548,13 @@ void oclunload(void)
 	CL_CH_ERR(clReleaseProgram(program));
 	CL_CH_ERR(clReleaseKernel(clzero));
 	CL_CH_ERR(clReleaseKernel(clarith1));
+	CL_CH_ERR(clReleaseKernel(clarith1_raw));
 	CL_CH_ERR(clReleaseKernel(clarith2));
 	CL_CH_ERR(clReleaseKernel(clarith3));
 	CL_CH_ERR(clReleaseKernel(clarith4));
 	CL_CH_ERR(clReleaseKernel(clarith5));
+	CL_CH_ERR(clReleaseKernel(clarith5_raw));
+	CL_CH_ERR(clReleaseKernel(clarith5_standard));
 	CL_CH_ERR(clReleaseKernel(clnConj));
 	CL_CH_ERR(clReleaseKernel(clinprod));
 	CL_CH_ERR(clReleaseKernel(cltransposeof));

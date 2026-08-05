@@ -41,9 +41,13 @@
 #endif
 
 // SEMI-GLOBAL VARIABLES
-
+#ifdef DEBUG
+	static int shifted_convergence_iter[MAX_N_SHIFTED];
+	static double shifted_convergence_resid[MAX_N_SHIFTED];
+#endif
 // defined and initialized in calculator.c
 extern doublecomplex *rvec; // can't be declared restrict due to SwapPointers
+extern doublecomplex *vcur, *vpr, *vtmp, *vnext;
 extern doublecomplex * restrict vec1,* restrict vec2,* restrict vec3,* restrict vec4,* restrict Avecbuffer;
 // defined and initialized in fft.c
 #if !defined(OPENCL) && !defined(SPARSE)
@@ -80,6 +84,7 @@ static bool chp_exit;      // checkpoint occurred - exit
 static bool complete;      // complete iteration was performed (not stopped in the middle)
 	// whether matrix-vector product computed during initialization can be reused at first iteration
 static bool matvec_ready;
+
 typedef struct // data for checkpoints
 {
 	void *ptr; // pointer to the data
@@ -113,6 +118,7 @@ ITER_FUNC(CGNR);
 ITER_FUNC(CSYM);
 ITER_FUNC(QMR_CS);
 ITER_FUNC(QMR_CS_2);
+ITER_FUNC(Shifted_BiCG_CS);
 /* TO ADD NEW ITERATIVE SOLVER
  * Add the line to this list in the alphabetical order, analogous to the ones already present. The variable part is the
  * name of the function, implementing the method. The macros expands to a function prototype.
@@ -125,7 +131,8 @@ static const struct iter_params_struct params[]={
 	{IT_CGNR,10,1,0,CGNR},
 	{IT_CSYM,10,6,2,CSYM},
 	{IT_QMR_CS,50000,8,3,QMR_CS},
-	{IT_QMR_CS_2,50000,5,2,QMR_CS_2}
+	{IT_QMR_CS_2,50000,5,2,QMR_CS_2},
+	{IT_SHIFTED_BICG_CS,50000,3,3,Shifted_BiCG_CS}
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * Add its parameters to this list in the alphabetical order. The parameters, in order of appearance, are identifier
 	 * (specified in const.h), maximum allowed number of iterations without the residual decrease, numbers of additional
@@ -137,8 +144,8 @@ static const struct iter_params_struct params[]={
 // EXTERNAL FUNCTIONS
 
 // matvec.c
-void MatVec(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,TIME_TYPE *timing,
-	TIME_TYPE *comm_timing);
+void MatVec(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,enum matvec_mode mode,
+	TIME_TYPE *timing,TIME_TYPE *comm_timing);
 
 #ifdef OCL_BLAS
 // Test clBLAS version (specific numbers is because we never considered earlier versions)
@@ -198,15 +205,15 @@ static void Check_clBLAS_Err(const clblasStatus err,ERR_LOC_DECL)
 //======================================================================================================================
 
 static void MatVec_wrapper(doublecomplex * restrict in,doublecomplex * restrict out,double * inprod,bool her,
-	TIME_TYPE *timing,TIME_TYPE *comm_timing)
+	enum matvec_mode mode,TIME_TYPE *timing,TIME_TYPE *comm_timing)
 /* function wrapper for MatVec to be called within the iterative solver if the solver is able to use clBLAS, i.e.
- * the host and GPU memory does not have to be synchronized. Currently it is only used in the BiCG solver.
+ * the host and GPU memory does not have to be synchronized. Currently it is used in the BiCG and Shifted BiCG CS solvers.
  */
 {
 #ifdef OCL_BLAS
 	bufupload=false;
 #endif
-	MatVec(in,out,inprod,her,timing,comm_timing);
+	MatVec(in,out,inprod,her,mode,timing,comm_timing);
 #ifdef OCL_BLAS
 	bufupload=true;
 #endif
@@ -243,6 +250,8 @@ static void SaveIterChpoint(void)
  */
 {
 	int i;
+	const enum matvec_mode checkpoint_mode =
+		IterMethod==IT_SHIFTED_BICG_CS ? MV_INTERACTION : MatVecMode;
 	char fname[MAX_FNAME];
 	FILE * restrict chp_file;
 	TIME_TYPE tstart;
@@ -284,6 +293,8 @@ static void SaveIterChpoint(void)
 	// write specific vectors
 	for (i=0;i<params[ind_m].vec_N;i++) if (fwrite(vectors[i].ptr,vectors[i].size,local_nRows,chp_file)!=local_nRows)
 		LogError(ALL_POS,"Failed writing to file '%s'",fname);
+	// write formulation last to preserve the layout of all previously existing checkpoint data
+	fwrite(&checkpoint_mode,sizeof(checkpoint_mode),1,chp_file);
 	// close file
 	FCloseErr(chp_file,fname,ALL_POS);
 	// write info to logfile after everyone is finished
@@ -302,6 +313,9 @@ static void LoadIterChpoint(void)
 {
 	int i;
 	int ind_m_new;
+	enum matvec_mode checkpoint_mode;
+	const enum matvec_mode expected_mode =
+		IterMethod==IT_SHIFTED_BICG_CS ? MV_INTERACTION : MatVecMode;
 	size_t local_nRows_new;
 	char fname[MAX_FNAME],ch;
 	FILE * restrict chp_file;
@@ -341,6 +355,11 @@ static void LoadIterChpoint(void)
 	// read specific vectors
 	for (i=0;i<params[ind_m].vec_N;i++) if (fread(vectors[i].ptr,vectors[i].size,local_nRows,chp_file)!=local_nRows)
 		LogError(ALL_POS,"Failed reading from file '%s'",fname);
+	// the formulation is appended after all data from the previous checkpoint layout
+	if (fread(&checkpoint_mode,sizeof(checkpoint_mode),1,chp_file)!=1)
+		LogError(ALL_POS,"File '%s' does not specify the linear-system formulation",fname);
+	if (checkpoint_mode!=expected_mode)
+		LogError(ALL_POS,"File '%s' uses a different linear-system formulation",fname);
 	// check if EOF reached and close file
 	if (fread(&ch,1,1,chp_file)!=0) LogError(ALL_POS,"File '%s' is too long",fname);
 	FCloseErr(chp_file,fname,ALL_POS);
@@ -408,10 +427,11 @@ static double ResidualNorm2(doublecomplex * restrict x,doublecomplex * restrict 
 	double res;
 
 	TIME_TYPE mc_time=0;
-	MatVec(x,buffer,NULL,false,mvp_timing,&mc_time);
+	MatVec(x,buffer,NULL,false,MatVecMode,mvp_timing,&mc_time);
 	(*mvp_comm_timing) += mc_time;
 	(*comm_timing) += mc_time;
-	nMult_mat(r,Einc,cc_sqrt);
+	if (MatVecMode==MV_STANDARD) nCopy(r,Einc);
+	else nMult_mat(r,Einc,cc_sqrt);
 	nDecrem(r,buffer,&res,comm_timing);
 	return res;
 }
@@ -497,7 +517,7 @@ ITER_FUNC(BCGS2)
 				rho0=rho1;
 				// u_j+1 = A.u_j
 				if (niter==1 && j==0 && matvec_ready) {} // do nothing; u[1]<=>Avecbuffer already contains matvec result
-				else MatVec(u[j],u[j+1],NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				else MatVec(u[j],u[j+1],NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				sigma=nDotProd(u[j+1],pvec,&Timing_OneIterComm); // sigma = u_j+1.r~0
 				// test for zero sigma (1/alpha)
 				dtmp=cabs(sigma)/cabs(rho1); // assume that rho1 is not exactly zero
@@ -509,7 +529,7 @@ ITER_FUNC(BCGS2)
 				// r_i = r_i - alpha*u_i+1
 				temp1=-alpha;
 				for (i=0;i<=j;i++) nIncrem01_cmplx(r[i],u[i+1],temp1,NULL,NULL);
-				MatVec(r[j],r[j+1],NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(r[j],r[j+1],NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			}
 			// --- The convex polynomial part ---
 			// Z = R'R
@@ -675,7 +695,7 @@ ITER_FUNC(BiCG_CS)
 			}
 			// q_k=Avecbuffer=A.p_k
 			if (niter==1 && matvec_ready) {} // do nothing, Avecbuffer is ready to use
-			else MatVec_wrapper(pvec,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec_wrapper(pvec,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// mu_k=p_k.q_k; check for mu_k!=0
 #ifdef OCL_BLAS
 			CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufmu,0,bufpvec,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,NULL,
@@ -794,7 +814,7 @@ ITER_FUNC(BiCGStab)
 			}
 			// calculate v_k=A.p_k
 			if (niter==1 && matvec_ready) nCopy(v,Avecbuffer);
-			else MatVec(pvec,v,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(pvec,v,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// alpha_k=ro_new/(v_k.r~)
 			temp1=nDotProd(v,rtilda,&Timing_OneIterComm);
 			dtmp=cabs(temp1)/cabs(ro_new); // assume that ro_new is not exactly zero
@@ -812,7 +832,7 @@ ITER_FUNC(BiCGStab)
 			}
 			else {
 				// t=Avecbuffer=A.s
-				MatVec(s,Avecbuffer,&denumOmega,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(s,Avecbuffer,&denumOmega,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				// omega_k=s.t/|t|^2
 				omega=nDotProd(s,Avecbuffer,&Timing_OneIterComm)/denumOmega;
 				// x_k=x_k-1+alpha_k*p_k+omega_k*s
@@ -850,10 +870,10 @@ ITER_FUNC(CGNR)
 		case PHASE_ITER:
 			// p_1=Ah.r_0 and ro_new=ro_0=|Ah.r_0|^2
 			// since first product is with Ah , matvec_ready can't be employed
-			if (niter==1) MatVec(rvec,pvec,&ro_new,true,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			if (niter==1) MatVec(rvec,pvec,&ro_new,true,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			else {
 				// Avecbuffer=AH.r_k-1, ro_new=ro_k-1=|AH.r_k-1|^2
-				MatVec(rvec,Avecbuffer,&ro_new,true,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+				MatVec(rvec,Avecbuffer,&ro_new,true,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 				// beta_k-1=ro_k-1/ro_k-2
 				beta=ro_new/ro_old;
 				// p_k=beta_k-1*p_k-1+AH.r_k-1
@@ -861,7 +881,7 @@ ITER_FUNC(CGNR)
 			}
 			// alpha_k=ro_k-1/|A.p_k|^2
 			// Avecbuffer=A.p_k
-			MatVec(pvec,Avecbuffer,&denumeratorAlpha,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			MatVec(pvec,Avecbuffer,&denumeratorAlpha,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			alpha=ro_new/denumeratorAlpha;
 			// x_k=x_k-1+alpha_k*p_k
 			nIncrem01(xvec,pvec,alpha,NULL,NULL);
@@ -932,7 +952,7 @@ ITER_FUNC(CSYM)
 			/* Avecbuffer = A.q_k. Since q_1 is r_0(*), mat-vec product for niter==1 is equivalent to Ah.r_0 (as in
 			 * CGNR). Thus, matvec_ready can't be employed.
 			 */
-			MatVec(q_new,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			MatVec(q_new,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// alpha_k = q_k(T).A.q_k
 			alpha=nDotProd_conj(q_new,Avecbuffer,&Timing_OneIterComm);
 			// eta_k = c_k-2*c_k-1*beta_k + s_k-1(*)*alpha_k
@@ -1078,7 +1098,7 @@ ITER_FUNC(QMR_CS)
 				temp1=1/beta;
 				nMultSelf_cmplx(Avecbuffer,temp1);
 			}
-			else MatVec(v,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(v,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			alpha=nDotProd_conj(v,Avecbuffer,&Timing_OneIterComm);
 			// v~_k+1=-beta_k*v_k-1-alpha_k*v_k+A.v_k
 			temp2=-alpha;
@@ -1217,7 +1237,7 @@ ITER_FUNC(QMR_CS_2)
 			if (niter==1 && matvec_ready) { // uses that p_1=v_1=r_0/ro_1
 				nMultSelf(Avecbuffer,1/ro_old);
 			}
-			else MatVec(pvec,Avecbuffer,NULL,false,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+			else MatVec(pvec,Avecbuffer,NULL,false,MatVecMode,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 			// eps_k = p_k(*).(A.p_k); beta_k = eps_k/delta_k
 			eps=nDotProd_conj(pvec,Avecbuffer,&Timing_OneIterComm);
 			beta=eps/delta;
@@ -1260,6 +1280,219 @@ ITER_FUNC(QMR_CS_2)
 }
 #undef EPS1
 #undef EPS2
+
+//======================================================================================================================
+ITER_FUNC(Shifted_BiCG_CS)
+// Short comment, providing full name of the iterative solver
+{
+// It is recommended to define all nontrivial constants here
+#define EPS1 1E-30
+	// all internal variables should be defined here as static, since the function will be called many times
+	static doublecomplex pn=0; // pseudo norm
+	static doublecomplex alfa1=0;
+	static doublecomplex beta_pr=0;
+	static doublecomplex beta_cur=0;
+	static int i=0;
+	static double inprodRp1_max=0;
+	double vtmp_norm2 = 0;
+#ifdef OCL_BLAS
+	cl_mem bufdot;
+	cl_mem bufvcur=bufargvec;
+	cl_mem bufAvecbuffer=bufresultvec;
+#endif
+
+	// The function accepts a single argument 'ph' describing a current phase to execute
+	switch (ph) {
+	case PHASE_VARS:
+	  return;
+	case PHASE_INIT: {
+#ifdef OCL_BLAS
+		/* This initialization part need to be moved somewhere during further adoption of clBLAS
+		 * For now, we use braces around this case to allow internal variable declaration
+		 */
+		cl_uint major,minor,patch;
+		CLBLAS_CH_ERR(clblasGetVersion(&major,&minor,&patch));
+		if (!GREATER_EQ2(major,minor,CLBLAS_VER_REQ,CLBLAS_SUBVER_REQ)) LogError(ONE_POS,
+			"clBLAS library version (%u.%u) is too old. Version %d.%d or newer is required",
+			major,minor,CLBLAS_VER_REQ,CLBLAS_SUBVER_REQ);
+		D("clBLAS library version - %u.%u.%u",major,minor,patch);
+		D("clblasSetup started");
+		CLBLAS_CH_ERR(clblasSetup());
+		CL_CH_ERR(clEnqueueWriteBuffer(command_queue,bufvcur,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,rvec,0,
+			NULL,NULL));
+		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvcur,0,1,bufvcur,0,1,buftmp,1,&command_queue,0,NULL,
+			NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&pn,0,NULL,NULL));
+		my_clReleaseBuffer(bufdot);
+#else
+		// Calculate first basis vector.
+		// Calculate the pseudo norm of the residual (for simplicity, x=0)
+		pn=nDotProdSelf_conj(rvec,&Timing_OneIterComm);
+#endif
+		pn=csqrt(pn); // complex square root
+#ifdef OCL_BLAS
+		cl_double2 clinvpn = {.s={creal(1/pn),cimag(1/pn)}};
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvpn,bufvcur,0,1,1,&command_queue,0,NULL,NULL));
+#else
+		nMult_cmplx(vcur, rvec, 1/pn);
+#endif
+		beta_pr=pn;
+		// v0=0
+#ifdef OCL_BLAS
+		size_t shifted_vec_rows=local_nRows;
+		size_t shifted_array_rows=(size_t)num_used_n*local_nRows;
+		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufvpr));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_vec_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufpArray));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_array_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufxArray));
+		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_array_rows,NULL,0,NULL,NULL));
+#else
+		nInit(vpr);
+#endif
+		for(i=0;i<num_used_n;i++) {
+			lArray[i]=0;
+			uArray[i]=0;
+#ifndef OCL_BLAS
+			nInit(pArray[i]);
+			nInit(xArray[i]);
+#endif
+			sigmaArray[i]=1/shifted_cc[i][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
+			continue_flag[i]=true;
+
+#ifdef DEBUG
+			shifted_convergence_iter[i]=-1;
+			shifted_convergence_resid[i]=0;
+#endif
+		}
+#ifdef OCL_BLAS
+		CL_CH_ERR(clFinish(command_queue));
+#endif
+	  return;
+	}
+	case PHASE_ITER:
+		// Lanczos Process
+		// A.v
+#ifdef OCL_BLAS
+		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
+#endif
+		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_INTERACTION,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+		// alfa1
+#ifdef OCL_BLAS
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvcur,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,
+			NULL,NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&alfa1,0,NULL,NULL));
+#else
+		alfa1=nDotProd_conj(vcur, Avecbuffer, &Timing_OneIterComm);
+#endif
+		// vtmp=-alfa1*vcur+A.vcur
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufAvecbuffer,bufvtmp,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,
+			NULL));
+		cl_double2 clmalfa1 = {.s={creal(-alfa1),cimag(-alfa1)}};
+		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmalfa1,bufvcur,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+#else
+		nLinComb_cmplx(vtmp,vcur,Avecbuffer,-alfa1,1,NULL,&Timing_OneIterComm);
+#endif
+		// vtmp=vtmp-beta0*vprev
+#ifdef OCL_BLAS
+		cl_double2 clmbeta = {.s={creal(-beta_pr),cimag(-beta_pr)}};
+		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmbeta,bufvpr,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+#else
+		nIncrem01_cmplx(vtmp,vpr,-beta_pr,NULL,&Timing_OneIterComm);
+#endif
+		// beta_cur=|vtmp|ps
+#ifdef OCL_BLAS
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,
+			NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&beta_cur,0,NULL,NULL));
+#else
+		beta_cur=nDotProdSelf_conj(vtmp,&Timing_OneIterComm);
+#endif
+		beta_cur=csqrt(beta_cur);
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvtmp,bufvnext,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufvnext,0,1,1,&command_queue,0,NULL,NULL));
+#else
+		nMult_cmplx(vnext, vtmp, 1/beta_cur);
+#endif
+		// vtmp = beta_{k+1} * v_{k+1}
+		// Compute the squared Euclidean norm ||vtmp||^2
+#ifdef OCL_BLAS
+		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vtmp_norm2,0,NULL,NULL));
+#else
+		vtmp_norm2 = nNorm2(vtmp,&Timing_OneIterComm);
+#endif
+		// CG iterates for all shifted systems
+		inprodRp1_max=0;
+		for(i=0;i<num_used_n;i++) {
+			if(continue_flag[i]) {
+				if(niter!=1) lArray[i]=beta_pr/dArray[i];
+				dArray[i]=alfa1+sigmaArray[i]-beta_pr*lArray[i];
+				if(niter==1) uArray[i]=beta_pr;
+				else uArray[i]=-lArray[i]*uArray[i];
+				// pArray[i]=vcur-lArray[i]*pArray[i]
+#ifdef OCL_BLAS
+				const size_t offset=(size_t)i*local_nRows;
+				cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
+				CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,NULL));
+				cl_double2 clunit = {.s={1,0}};
+				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,NULL,
+					NULL));
+#else
+				nIncrem10_cmplx(pArray[i],vcur,-lArray[i],NULL,&Timing_OneIterComm);
+#endif
+				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
+				const doublecomplex xcoef=uArray[i]/dArray[i];
+#ifdef OCL_BLAS
+				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
+				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,&command_queue,
+					0,NULL,NULL));
+#else
+				nIncrem01_cmplx(xArray[i],pArray[i],xcoef,NULL,&Timing_OneIterComm);
+#endif
+				//current residual
+				// r_k = -(u_k/d_k)*vtmp
+				inprodRp1Array[i] =
+					cAbs2(xcoef) * vtmp_norm2;
+#ifdef DEBUG
+				shifted_convergence_resid[i]=sqrt(resid_scale*inprodRp1Array[i]);
+#endif
+				if(inprodRp1Array[i]<=epsB) {
+#ifdef DEBUG
+					if (shifted_convergence_iter[i]<0) shifted_convergence_iter[i]=niter;
+#endif
+					continue_flag[i]=false;
+				}
+				if(inprodRp1Array[i]>inprodRp1_max) inprodRp1_max=inprodRp1Array[i];
+				//if(i==2) inprodRp1_max=inprodRp1Array[i];
+				//TODO: If the algorithm converged (i-case), then we no longer calculate.
+				// Here I assume that the refractive indices are sorted from smallest to largest.
+				// Accordingly, the former converge earlier than the latter.
+				// Perhaps it is worth redoing this loop with a loop over the list of indices,
+				// while the list will decrease as the particles converge.
+			}
+		}
+		inprodRp1=inprodRp1_max; // outputs are only for the highest refractive index
+		// vpr=vcur, vcur=vnext, beta_pr=beta_cur
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufvpr,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvnext,bufvcur,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		CL_CH_ERR(clFinish(command_queue));
+		my_clReleaseBuffer(bufdot);
+#else
+		nCopy(vpr,vcur);
+		nCopy(vcur,vnext);
+#endif
+		beta_pr=beta_cur;
+	  return;
+	}
+	LogError(ONE_POS,"Unknown phase (%d) of the iterative solver",(int)ph);
+#undef EPS1
+}
 
 //======================================================================================================================
 
@@ -1444,13 +1677,16 @@ static void InitFieldfromE(void)
  * assumes that xvec contains initial electric field, it is then replaced by x_0
  */
 {
-	// calculate x = (1/cc_sqrt)*V*chi*E (both x and E are stored in xvec)
+	// Convert the electric field to the unknown of the selected linear-system formulation.
 	doublecomplex mult[MAX_NMAT][3];
 	int i,j;
-	for (i=0;i<Nmat;i++) for (j=0;j<3;j++) mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]);
+	for (i=0;i<Nmat;i++) for (j=0;j<3;j++) {
+		if (MatVecMode==MV_STANDARD) mult[i][j]=1/chi_inv[i][j]; // P=V.chi.E
+		else mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]); // x=C^(-1/2).P
+	}
 	nMultSelf_mat(xvec,mult);
 	// calculate A.x_0, r_0=b-A.x_0, and |r_0|^2
-	MatVec(xvec,Avecbuffer,NULL,false,&Timing_MVP,&Timing_MVPComm);
+	MatVec(xvec,Avecbuffer,NULL,false,MatVecMode,&Timing_MVP,&Timing_MVPComm);
 	nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 }
 
@@ -1469,7 +1705,7 @@ static const char *CalcInitField(double zero_resid,const enum incpol which)
 			 * cases. Moreover, this option will probably be changed afterwards.
 			 */
 			// calculate A.(x_0=b), r_0=b-A.(x_0=b) and |r_0|^2
-			MatVec(pvec,Avecbuffer,NULL,false,&Timing_MVP,&Timing_MVPComm);
+			MatVec(pvec,Avecbuffer,NULL,false,MatVecMode,&Timing_MVP,&Timing_MVPComm);
 			nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
 			// check which x_0 is better
 			if (zero_resid<inprodR) { // use x_0=0
@@ -1489,10 +1725,8 @@ static const char *CalcInitField(double zero_resid,const enum incpol which)
 			inprodR=zero_resid;
 			return "x_0 = 0";
 		case IF_INC:
-			nCopy(xvec,pvec); // x_0=b, i.e. E_exc=E_inc
-			// calculate A.(x_0=b), r_0=b-A.(x_0=b) and |r_0|^2
-			MatVec(xvec,Avecbuffer,NULL,false,&Timing_MVP,&Timing_MVPComm);
-			nSubtr(rvec,pvec,Avecbuffer,&inprodR,&Timing_InitIterComm);
+			nCopy(xvec,Einc);
+			InitFieldfromE(); // initialize from E=E_inc
 			return "x_0 = E_inc";
 		case IF_WKB:
 			CalcFieldWKB(xvec); // calculate WKB electric field
@@ -1524,23 +1758,20 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	// redundant initialization to remove warnings
 	time_tmp=time_tmp2=time_tmp3=0;
 
-	/* Instead of solving system (I+D.C).x=b , C - diagonal matrix with couple constants
-	 *                                         D - symmetric interaction matrix of Green's tensor
-	 * we solve system (I+S.D.S).(S.x)=(S.b), S=sqrt(C), then total interaction matrix is symmetric and
-	 * Jacobi-preconditioned for any distribution of refractive index.
-	 *
-	 * Relative residual is defined by dividing by the norm of the righ-hand-side, i.e. |S.Einc|. This is more robust,
-	 * when various non-zero initial guesses are used.
+	/* The standard formulation solves (D+C^(-1)).P=Einc. The symmetrized formulation solves
+	 * (I+S.D.S).x=S.Einc, where S=sqrt(C) and x=S^(-1).P. Both matrices are complex symmetric for the currently
+	 * supported diagonal C; the latter is also Jacobi-preconditioned.
 	 */
-	/* p=b=(S.Einc) is right part of the linear system; used only here. In iteration methods themselves p is completely
-	 * different vector. To avoid confusion this is done before any other initializations, specific to iterative solvers
+	/* p is the right-hand side of the linear system; used only here. In iteration methods themselves p is a completely
+	 * different vector. To avoid confusion this is done before any other initializations specific to iterative solvers.
 	 */
 	Timing_InitIterComm=Timing_MVP=Timing_MVPComm=0;
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
 	if (!load_chpoint) {
-		nMult_mat(pvec,Einc,cc_sqrt);
-		temp=nNorm2(pvec,&Timing_InitIterComm); // |S.Einc|^2, but also equal to |r_0|^2 when x_0=0
+		if (IterMethod==IT_SHIFTED_BICG_CS || MatVecMode==MV_STANDARD) nCopy(pvec,Einc);
+		else nMult_mat(pvec,Einc,cc_sqrt);
+		temp=nNorm2(pvec,&Timing_InitIterComm); // |r_0|^2 when x_0=0
 		resid_scale=1/temp;
 		epsB=iter_eps*iter_eps*temp;
 		// Calculate initial field
@@ -1616,6 +1847,73 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		 */
 		ProgressReport();
 	}
+#ifdef DEBUG
+	if (method_in==IT_SHIFTED_BICG_CS && IFROOT) {
+		char fname[MAX_FNAME];
+		FILE *fp;
+		long file_size;
+		const char *polarization;
+
+		if (which==INCPOL_Y)
+			polarization="Y";
+		else if (which==INCPOL_X)
+			polarization="X";
+		else
+			polarization="unknown";
+
+		SnprintfErr(ONE_POS,fname,MAX_FNAME,"%s/shifted_convergence.dat",directory);
+		fp=FOpenErr(fname,"a+",ONE_POS);
+
+		if (fseek(fp,0,SEEK_END)!=0) {
+			FCloseErr(fp,fname,ONE_POS);
+			LogError(ONE_POS,"Failed to seek in '%s'",fname);
+		}
+
+		file_size=ftell(fp);
+
+		if (file_size<0) {
+			FCloseErr(fp,fname,ONE_POS);
+			LogError(ONE_POS,"Failed to determine size of '%s'",fname);
+		}
+
+		if (file_size==0) {
+			fprintf(
+				fp,
+				"# Shifted BiCG-CS convergence information\n"
+				"#\n"
+				"# Columns:\n"
+				"# 1: incident polarization\n"
+				"# 2: shifted-system index\n"
+				"# 3: real part of refractive index\n"
+				"# 4: imaginary part of refractive index\n"
+				"# 5: convergence iteration (-1 if not converged)\n"
+				"# 6: final relative residual norm\n"
+				"#\n"
+				"# pol  index  Re(m)  Im(m)  iterations"
+				"  relative_residual\n"
+			);
+		}
+
+		fprintf(fp,"\n# Polarization %s\n",polarization);
+
+		for (int shifted_i=0;
+			shifted_i<num_used_n;
+			shifted_i++) {
+			fprintf(
+				fp,
+				"%s  %d  %.17e  %.17e  %d  %.17e\n",
+				polarization,
+				shifted_i,
+				creal(shifted_ref_index[shifted_i]),
+				cimag(shifted_ref_index[shifted_i]),
+				shifted_convergence_iter[shifted_i],
+				shifted_convergence_resid[shifted_i]
+			);
+		}
+
+		FCloseErr(fp,fname,ONE_POS);
+	}
+#endif
 	// Save checkpoint of type always
 	if (chp_type==CHP_ALWAYS && !chp_exit) SaveIterChpoint();
 	/* process incomplete convergence
@@ -1632,6 +1930,16 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		else if (counter>params[ind_m].mc) LogError(ONE_POS,"Residual norm haven't decreased for maximum allowed "
 			"number of iterations (%d)",params[ind_m].mc);
 	}
+	if (IterMethod==IT_SHIFTED_BICG_CS){
+#ifdef OCL_BLAS
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxArray,CL_TRUE,0,(size_t)num_used_n*local_nRows*
+			sizeof(doublecomplex),xArray[0],0,NULL,NULL));
+#endif
+		nCopy(xvec,xArray[0]);
+		// TODO: If we use recalc_resid then we have to calculate rvec here,
+		// and explicitly multiply a matrix by a vector (A.x), because in the shifted solver, res is a number.
+	}
+
 	if (recalc_resid) { // compute and print final residual norm
 		inprodR=ResidualNorm2(xvec,rvec,Avecbuffer,&Timing_MVP,&Timing_MVPComm,&Timing_IntFieldOneComm);
 		if (IFROOT) {
@@ -1647,7 +1955,13 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	/* x is a solution of a modified system, not exactly internal field; should not be used further except for adaptive
 	 * technique (as starting vector for next system)
 	 */
-	nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
+	/*FILE *fp2;
+	if ((fp2 = fopen("xvec after iter alg (ADDA).txt", "w")) == NULL) printf("File is not open");
+	for(size_t i=0;i<local_nRows;i++) fprintf(fp2,"%.30f + %.30f*I,\n", creal(xvec[i]), cimag(xvec[i]));
+	fclose(fp2);*/
+	if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,xArray[0]);
+	else if (MatVecMode==MV_STANDARD) nCopy(pvec,xvec);
+	else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
 	return (niter-1); // the number of iterations elapsed
 }
