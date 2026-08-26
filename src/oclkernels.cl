@@ -58,6 +58,14 @@ void cMult2(__constant double2 *a,__global const double2 *b,double2 *c)
 
 //======================================================================================================================
 
+double2 cMultValue(const double2 a,const double2 b)
+// complex multiplication of two values
+{
+	return (double2)(a.s0*b.s0-a.s1*b.s1,a.s1*b.s0+a.s0*b.s1);
+}
+
+//======================================================================================================================
+
 double cvNorm2(__global const double2 *a)
 // square of the norm of a complex vector[3]
 {
