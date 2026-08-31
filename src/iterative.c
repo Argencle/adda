@@ -65,6 +65,9 @@ extern const char *chp_dir;
 extern time_t last_chp_wt;
 extern TIME_TYPE Timing_OneIter,Timing_OneIterComm,Timing_InitIter,Timing_InitIterComm,Timing_IntFieldOneComm,
 	Timing_MVP,Timing_MVPComm,Timing_OneIterMVP,Timing_OneIterMVPComm;
+#ifdef OCL_BLAS
+extern TIME_TYPE Timing_BufxArrayReadback;
+#endif
 extern size_t TotalIter;
 
 // LOCAL VARIABLES
@@ -1766,6 +1769,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	 * different vector. To avoid confusion this is done before any other initializations specific to iterative solvers.
 	 */
 	Timing_InitIterComm=Timing_MVP=Timing_MVPComm=0;
+#ifdef OCL_BLAS
+	Timing_BufxArrayReadback=0;
+#endif
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
 	if (!load_chpoint) {
@@ -1932,8 +1938,10 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	}
 	if (IterMethod==IT_SHIFTED_BICG_CS){
 #ifdef OCL_BLAS
+		tstart=GET_TIME();
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxArray,CL_TRUE,0,(size_t)num_used_n*local_nRows*
 			sizeof(doublecomplex),xArray[0],0,NULL,NULL));
+		Timing_BufxArrayReadback+=GET_TIME()-tstart;
 #endif
 		nCopy(xvec,xArray[0]);
 		// TODO: If we use recalc_resid then we have to calculate rvec here,
