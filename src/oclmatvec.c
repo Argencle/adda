@@ -212,6 +212,11 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	// blocking read to finalize queue
 	if (bufupload) CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufresultvec,CL_TRUE,0,local_nRows*sizeof(doublecomplex),
 		resultvec,0,NULL,NULL));
+	/* In OCL_BLAS mode the iterative solver keeps vectors on the device (bufupload=false), so there is no blocking read
+	 * above to finalize the queue. Explicitly wait here to ensure that MatVec timing includes the GPU execution rather
+	 * than only the time needed to enqueue its operations.
+	 */
+	else CL_CH_ERR(clFinish(command_queue));
 	if (ipr) MyInnerProduct(inprod,double_type,1,comm_timing);
 #ifdef PRECISE_TIMING
 	GET_SYSTEM_TIME(tvp+1);
