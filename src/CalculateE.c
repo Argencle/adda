@@ -969,12 +969,13 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 		if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");
 	} else {
 		const char *directoryOld = directory; // store the original address of the folder for second call of CalculateE
+		doublecomplex *const pvec_alloc=pvec;
 		for(int i=0;i<num_used_n;i++) {
 			char shifted_dir[MAX_DIRNAME];
 			const size_t offset=(size_t)i*local_nRows;
 			BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
 			directory=shifted_dir; // change the folder
-			nCopy(pvec,xArray+offset); // copy polarization to pvec for each refractive index
+			pvec=xArray+offset; // use the shifted polarization directly during post-processing
 			if (yzplane) CalcEplaneYZ(which,type);     // generally plane of incPolY and prop
 			if (scat_plane) CalcScatPlane(which,type); // the scattering plane through ez,prop,incPolX - xz by default
 			// Calculate the scattered field for the whole solid-angle
@@ -1001,13 +1002,11 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 				}
 			}
 			// saves internal fields and/or dipole polarizations to text file
-			if (store_int_field) {
-				nCopy(xvec,xArray+offset);
-				StoreIntFields(which);
-			}
+			if (store_int_field) StoreIntFields(which);
 			if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");
 			directory=directoryOld; // back to the original folder
 		}
+		pvec=pvec_alloc; // restore the separately allocated buffer for subsequent calculations and deallocation
 	}
 
 

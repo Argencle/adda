@@ -1498,8 +1498,8 @@ ITER_FUNC(Shifted_BiCG_CS)
 		CL_CH_ERR(clFinish(command_queue));
 		my_clReleaseBuffer(bufdot);
 #else
-		nCopy(vpr,vcur);
-		nCopy(vcur,vnext);
+		SwapPointers(&vpr,&vcur);
+		SwapPointers(&vcur,&vnext);
 #endif
 		beta_pr=beta_cur;
 	  return;
@@ -1954,7 +1954,6 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 			sizeof(doublecomplex),xArray,0,NULL,NULL));
 		Timing_BufxArrayReadback+=GET_TIME()-tstart;
 #endif
-		nCopy(xvec,xArray);
 		// TODO: If we use recalc_resid then we have to calculate rvec here,
 		// and explicitly multiply a matrix by a vector (A.x), because in the shifted solver, res is a number.
 	}
@@ -1978,9 +1977,11 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	if ((fp2 = fopen("xvec after iter alg (ADDA).txt", "w")) == NULL) printf("File is not open");
 	for(size_t i=0;i<local_nRows;i++) fprintf(fp2,"%.30f + %.30f*I,\n", creal(xvec[i]), cimag(xvec[i]));
 	fclose(fp2);*/
-	if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,xArray);
-	else if (MatVecMode==MV_STANDARD) nCopy(pvec,xvec);
-	else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
+	// CalculateE loads each shifted polarization directly from xArray, so no intermediate copy to pvec is needed.
+	if (IterMethod!=IT_SHIFTED_BICG_CS) {
+		if (MatVecMode==MV_STANDARD) nCopy(pvec,xvec);
+		else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
+	}
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
 	return (niter-1); // the number of iterations elapsed
 }
