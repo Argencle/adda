@@ -1331,7 +1331,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 #else
 		// Calculate first basis vector.
 		// Calculate the pseudo norm of the residual (for simplicity, x=0)
-		pn=nDotProdSelf_conj(rvec,&Timing_OneIterComm);
+		pn=nDotProdSelf_conj(rvec,&Timing_InitIterComm);
 #endif
 		pn=csqrt(pn); // complex square root
 #ifdef OCL_BLAS
@@ -1344,24 +1344,14 @@ ITER_FUNC(Shifted_BiCG_CS)
 		// v0=0
 #ifdef OCL_BLAS
 		size_t shifted_vec_rows=local_nRows;
-		size_t shifted_array_rows=(size_t)num_used_n*local_nRows;
 		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufvpr));
 		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_vec_rows,NULL,0,NULL,NULL));
-		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufpArray));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_array_rows,NULL,0,NULL,NULL));
-		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufxArray));
-		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_array_rows,NULL,0,NULL,NULL));
 #else
 		nInit(vpr);
 #endif
 		for(i=0;i<num_used_n;i++) {
 			lArray[i]=0;
 			uArray[i]=0;
-#ifndef OCL_BLAS
-			const size_t offset=(size_t)i*local_nRows;
-			nInit(pArray+offset);
-			nInit(xArray+offset);
-#endif
 			sigmaArray[i]=1/shifted_cc[i][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
 			continue_flag[i]=true;
 
@@ -1449,21 +1439,34 @@ ITER_FUNC(Shifted_BiCG_CS)
 				const doublecomplex xcoef=uArray[i]/dArray[i];
 				// pArray[i]=vcur-lArray[i]*pArray[i]
 #ifdef OCL_BLAS
-				cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
-				CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,NULL));
-				cl_double2 clunit = {.s={1,0}};
-				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,NULL,
-					NULL));
+				if (niter==1) {
+					CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufpArray,0,offset*sizeof(doublecomplex),
+						sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+				}
+				else {
+					cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
+					CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,NULL));
+					cl_double2 clunit = {.s={1,0}};
+					CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,
+						NULL,NULL));
+				}
 #else
-				nIncrem10_cmplx(pArray+offset,vcur,-lArray[i],NULL,&Timing_OneIterComm);
+				if (niter==1) nCopy(pArray+offset,vcur);
+				else nIncrem10_cmplx(pArray+offset,vcur,-lArray[i],NULL,&Timing_OneIterComm);
 #endif
 				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
 #ifdef OCL_BLAS
 				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
-				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,&command_queue,
-					0,NULL,NULL));
+				if (niter==1) {
+					CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufpArray,bufxArray,offset*sizeof(doublecomplex),
+						offset*sizeof(doublecomplex),sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+					CLBLAS_CH_ERR(clblasZscal(local_nRows,clxcoef,bufxArray,offset,1,1,&command_queue,0,NULL,NULL));
+				}
+				else CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,
+					&command_queue,0,NULL,NULL));
 #else
-				nIncrem01_cmplx(xArray+offset,pArray+offset,xcoef,NULL,&Timing_OneIterComm);
+				if (niter==1) nMult_cmplx(xArray+offset,pArray+offset,xcoef);
+				else nIncrem01_cmplx(xArray+offset,pArray+offset,xcoef,NULL,&Timing_OneIterComm);
 #endif
 				//current residual
 				// r_k = -(u_k/d_k)*vtmp
