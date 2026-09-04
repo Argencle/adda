@@ -1380,6 +1380,13 @@ ITER_FUNC(Shifted_BiCG_CS)
 #ifdef OCL_BLAS
 		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
 #endif
+#ifdef ADDA_MPI
+		/* The shifted vector updates scale with local_nRows*num_used_n and may desynchronize MPI ranks. Synchronize
+		 * before MatVec to prevent this imbalance from being incorrectly included in the MatVec timing at the first
+		 * BlockTranspose barrier.
+		 */
+		Synchronize();
+#endif
 		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_INTERACTION,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 		// alfa1
 #ifdef OCL_BLAS
