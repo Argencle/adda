@@ -108,8 +108,8 @@ extern doublecomplex *lArray;
 extern doublecomplex *dArray;
 extern doublecomplex *sigmaArray;
 extern doublecomplex *uArray;
-extern doublecomplex **pArray;
-extern doublecomplex **xArray;
+extern doublecomplex *pArray;
+extern doublecomplex *xArray;
 extern double *inprodRp1Array;
 extern bool *continue_flag;
 extern int num_used_n; // number of used refractive indexes

@@ -40,10 +40,10 @@ extern doublecomplex * restrict EplaneX, * restrict EplaneY, * restrict EyzplX, 
 extern const double dtheta_deg,dtheta_rad;
 extern doublecomplex * restrict ampl_alphaX,* restrict ampl_alphaY;
 extern double * restrict muel_alpha;
-extern doublecomplex **shiftedEplaneX_store, **shiftedEplaneY_store;
-extern doublecomplex **shiftedEyzplX_store, **shiftedEyzplY_store;
-extern doublecomplex **shiftedEgridX_store, **shiftedEgridY_store;
-extern doublecomplex **shiftedAmplAlphaX_store, **shiftedAmplAlphaY_store;
+extern doublecomplex *shiftedEplaneX_store, *shiftedEplaneY_store;
+extern doublecomplex *shiftedEyzplX_store, *shiftedEyzplY_store;
+extern doublecomplex *shiftedEgridX_store, *shiftedEgridY_store;
+extern doublecomplex *shiftedAmplAlphaX_store, *shiftedAmplAlphaY_store;
 extern double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 // defined and initialized in crosssec.c
 extern const Parms_1D phi_sg;
@@ -94,26 +94,30 @@ static void SaveShiftedScatFields(const int idx,const enum incpol which,const en
 		const size_t alpha_size=plane_size*alpha_int.N;
 
 		if (!store_mueller) return;
-		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedAmplAlphaX_store[idx],ampl_alphaX,
+		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedAmplAlphaX_store+(size_t)idx*alpha_size,ampl_alphaX,
 			alpha_size*sizeof(doublecomplex));
-		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedAmplAlphaY_store[idx],ampl_alphaY,
+		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedAmplAlphaY_store+(size_t)idx*alpha_size,ampl_alphaY,
 			alpha_size*sizeof(doublecomplex));
 		return;
 	}
 
 	if (yzplane) {
-		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedEyzplX_store[idx],EyzplX,plane_size*sizeof(doublecomplex));
-		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedEyzplY_store[idx],EyzplY,plane_size*sizeof(doublecomplex));
+		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedEyzplX_store+(size_t)idx*plane_size,EyzplX,
+			plane_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedEyzplY_store+(size_t)idx*plane_size,EyzplY,
+			plane_size*sizeof(doublecomplex));
 	}
 	if (scat_plane) {
-		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedEplaneX_store[idx],EplaneX,plane_size*sizeof(doublecomplex));
-		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedEplaneY_store[idx],EplaneY,plane_size*sizeof(doublecomplex));
+		if (which==INCPOL_X || type==CE_PARPER) memcpy(shiftedEplaneX_store+(size_t)idx*plane_size,EplaneX,
+			plane_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y || type==CE_PARPER) memcpy(shiftedEplaneY_store+(size_t)idx*plane_size,EplaneY,
+			plane_size*sizeof(doublecomplex));
 	}
 	if (scat_grid) {
 		const size_t grid_size=2*(size_t)angles.N;
 
-		if (which==INCPOL_X) memcpy(shiftedEgridX_store[idx],EgridX,grid_size*sizeof(doublecomplex));
-		if (which==INCPOL_Y) memcpy(shiftedEgridY_store[idx],EgridY,grid_size*sizeof(doublecomplex));
+		if (which==INCPOL_X) memcpy(shiftedEgridX_store+(size_t)idx*grid_size,EgridX,grid_size*sizeof(doublecomplex));
+		if (which==INCPOL_Y) memcpy(shiftedEgridY_store+(size_t)idx*grid_size,EgridY,grid_size*sizeof(doublecomplex));
 	}
 }
 
@@ -131,24 +135,24 @@ void RestoreShiftedScatFields(const int idx)
 		muel_alpha[-2]=shiftedCext_store[idx];
 		muel_alpha[-1]=shiftedCabs_store[idx];
 		if (!store_mueller) return;
-		memcpy(ampl_alphaX,shiftedAmplAlphaX_store[idx],alpha_size*sizeof(doublecomplex));
-		memcpy(ampl_alphaY,shiftedAmplAlphaY_store[idx],alpha_size*sizeof(doublecomplex));
+		memcpy(ampl_alphaX,shiftedAmplAlphaX_store+(size_t)idx*alpha_size,alpha_size*sizeof(doublecomplex));
+		memcpy(ampl_alphaY,shiftedAmplAlphaY_store+(size_t)idx*alpha_size,alpha_size*sizeof(doublecomplex));
 		return;
 	}
 
 	if (yzplane) {
-		memcpy(EyzplX,shiftedEyzplX_store[idx],plane_size*sizeof(doublecomplex));
-		memcpy(EyzplY,shiftedEyzplY_store[idx],plane_size*sizeof(doublecomplex));
+		memcpy(EyzplX,shiftedEyzplX_store+(size_t)idx*plane_size,plane_size*sizeof(doublecomplex));
+		memcpy(EyzplY,shiftedEyzplY_store+(size_t)idx*plane_size,plane_size*sizeof(doublecomplex));
 	}
 	if (scat_plane) {
-		memcpy(EplaneX,shiftedEplaneX_store[idx],plane_size*sizeof(doublecomplex));
-		memcpy(EplaneY,shiftedEplaneY_store[idx],plane_size*sizeof(doublecomplex));
+		memcpy(EplaneX,shiftedEplaneX_store+(size_t)idx*plane_size,plane_size*sizeof(doublecomplex));
+		memcpy(EplaneY,shiftedEplaneY_store+(size_t)idx*plane_size,plane_size*sizeof(doublecomplex));
 	}
 	if (scat_grid) {
 		const size_t grid_size=2*(size_t)angles.N;
 
-		memcpy(EgridX,shiftedEgridX_store[idx],grid_size*sizeof(doublecomplex));
-		memcpy(EgridY,shiftedEgridY_store[idx],grid_size*sizeof(doublecomplex));
+		memcpy(EgridX,shiftedEgridX_store+(size_t)idx*grid_size,grid_size*sizeof(doublecomplex));
+		memcpy(EgridY,shiftedEgridY_store+(size_t)idx*grid_size,grid_size*sizeof(doublecomplex));
 	}
 }
 
@@ -967,9 +971,10 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 		const char *directoryOld = directory; // store the original address of the folder for second call of CalculateE
 		for(int i=0;i<num_used_n;i++) {
 			char shifted_dir[MAX_DIRNAME];
+			const size_t offset=(size_t)i*local_nRows;
 			BuildShiftedDirectoryName(i,directoryOld,shifted_dir,MAX_DIRNAME);
 			directory=shifted_dir; // change the folder
-			nCopy(pvec,xArray[i]); // copy polarization to pvec for each refractive index
+			nCopy(pvec,xArray+offset); // copy polarization to pvec for each refractive index
 			if (yzplane) CalcEplaneYZ(which,type);     // generally plane of incPolY and prop
 			if (scat_plane) CalcScatPlane(which,type); // the scattering plane through ez,prop,incPolX - xz by default
 			// Calculate the scattered field for the whole solid-angle
@@ -997,9 +1002,7 @@ int CalculateE(const enum incpol which,const enum Eftype type)
 			}
 			// saves internal fields and/or dipole polarizations to text file
 			if (store_int_field) {
-				// copy polarization to xvec for each refractive index
-				// TODO: polarization->electric field
-				nCopy(xvec,xArray[i]);
+				nCopy(xvec,xArray+offset);
 				StoreIntFields(which);
 			}
 			if (store_dip_pol) StoreFields(which,pvec,NULL,F_DIPPOL,F_DIPPOL_TMP,"P","Dipole polarizations");

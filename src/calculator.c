@@ -58,10 +58,10 @@ doublecomplex * restrict EyzplX, * restrict EyzplY; // same for scattering in yz
 double dtheta_deg,dtheta_rad; // delta theta in degrees and radians
 doublecomplex * restrict ampl_alphaX,* restrict ampl_alphaY; // amplitude matrix for different values of alpha
 double * restrict muel_alpha; // mueller matrix for different values of alpha
-doublecomplex **shiftedEplaneX_store, **shiftedEplaneY_store;
-doublecomplex **shiftedEyzplX_store, **shiftedEyzplY_store;
-doublecomplex **shiftedEgridX_store, **shiftedEgridY_store;
-doublecomplex **shiftedAmplAlphaX_store, **shiftedAmplAlphaY_store;
+doublecomplex *shiftedEplaneX_store, *shiftedEplaneY_store;
+doublecomplex *shiftedEyzplX_store, *shiftedEyzplY_store;
+doublecomplex *shiftedEgridX_store, *shiftedEgridY_store;
+doublecomplex *shiftedAmplAlphaX_store, *shiftedAmplAlphaY_store;
 double * restrict shiftedCext_store, * restrict shiftedCabs_store;
 
 // used in crosssec.c
@@ -748,14 +748,6 @@ static double orient_integrand(int beta_i,int gamma_i, double * restrict res)
 
 //======================================================================================================================
 
-doublecomplex ** malloc_func(const size_t rows, const size_t columns)
-{
-	doublecomplex **ptr=(doublecomplex **)malloc(columns*sizeof(doublecomplex *));
-	doublecomplex *p=malloc(rows*columns*sizeof(doublecomplex));
-	for(size_t i=0;i<columns;i++) ptr[i]=&p[i*rows];
-	return ptr;
-}
-
 static void AllocateEverything(void)
 // allocates a lot of arrays and performs memory analysis
 {
@@ -823,29 +815,39 @@ static void AllocateEverything(void)
 			break;
 		case IT_SHIFTED_BICG_CS:
 			tmp2=sizeof(doublecomplex)*(double)num_used_n;
-			tmp3=sizeof(doublecomplex)*(double)(local_nRows*num_used_n);
+			tmp3=sizeof(doublecomplex)*(double)local_nRows*num_used_n;
+			temp_int=MultOverflow(local_nRows,(size_t)num_used_n,ALL_POS_FUNC);
 
-			pArray=malloc_func(local_nRows,num_used_n);
-			xArray=malloc_func(local_nRows,num_used_n);
+			if (!prognosis) {
+#ifndef OCL_BLAS
+				// With clBLAS the shifted search directions reside only in the device buffer bufpArray.
+				MALLOC_VECTOR(pArray,complex,temp_int,ALL);
+#endif
+				MALLOC_VECTOR(xArray,complex,temp_int,ALL);
+
+				MALLOC_VECTOR(vcur,complex,local_nRows,ALL);
+				MALLOC_VECTOR(vpr,complex,local_nRows,ALL);
+				MALLOC_VECTOR(vtmp,complex,local_nRows,ALL);
+				MALLOC_VECTOR(vnext,complex,local_nRows,ALL);
+
+				MALLOC_VECTOR(lArray,complex,num_used_n,ALL);
+				MALLOC_VECTOR(dArray,complex,num_used_n,ALL);
+				MALLOC_VECTOR(sigmaArray,complex,num_used_n,ALL);
+				MALLOC_VECTOR(uArray,complex,num_used_n,ALL);
+
+				MALLOC_VECTOR(inprodRp1Array,double,num_used_n,ALL);
+				MALLOC_VECTOR(continue_flag,bool,num_used_n,ALL);
+			}
+#ifdef OCL_BLAS
+			memory+=tmp3;
+#else
 			memory+=2*tmp3;
-
-			MALLOC_VECTOR(vcur,complex,local_nRows,ALL);
-			MALLOC_VECTOR(vpr,complex,local_nRows,ALL);
-			MALLOC_VECTOR(vtmp,complex,local_nRows,ALL);
-			MALLOC_VECTOR(vnext,complex,local_nRows,ALL);
+#endif
 			memory+=4*tmp;
-
-			MALLOC_VECTOR(lArray,complex,num_used_n,ALL);
-			MALLOC_VECTOR(dArray,complex,num_used_n,ALL);
-			MALLOC_VECTOR(sigmaArray,complex,num_used_n,ALL);
-			MALLOC_VECTOR(uArray,complex,num_used_n,ALL);
 			memory+=4*tmp2;
-
-			inprodRp1Array=malloc(num_used_n*sizeof(double));
 			memory+=sizeof(double)*(double)num_used_n;
-			continue_flag=malloc(num_used_n*sizeof(bool));
 			memory+=sizeof(bool)*(double)num_used_n;
-
+			break;
 	}
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * Add here a case corresponding to the new iterative solver. If the new iterative solver requires any extra vectors
@@ -866,8 +868,9 @@ static void AllocateEverything(void)
 			MALLOC_VECTOR(EyzplX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EyzplY,complex,temp_int,ALL);
 			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-				shiftedEyzplX_store=malloc_func(temp_int,num_used_n);
-				shiftedEyzplY_store=malloc_func(temp_int,num_used_n);
+				temp_int=MultOverflow(temp_int,(size_t)num_used_n,ALL_POS_FUNC);
+				MALLOC_VECTOR(shiftedEyzplX_store,complex,temp_int,ALL);
+				MALLOC_VECTOR(shiftedEyzplY_store,complex,temp_int,ALL);
 			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
@@ -881,8 +884,9 @@ static void AllocateEverything(void)
 			MALLOC_VECTOR(EplaneX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EplaneY,complex,temp_int,ALL);
 			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-				shiftedEplaneX_store=malloc_func(temp_int,num_used_n);
-				shiftedEplaneY_store=malloc_func(temp_int,num_used_n);
+				temp_int=MultOverflow(temp_int,(size_t)num_used_n,ALL_POS_FUNC);
+				MALLOC_VECTOR(shiftedEplaneX_store,complex,temp_int,ALL);
+				MALLOC_VECTOR(shiftedEplaneY_store,complex,temp_int,ALL);
 			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
@@ -912,8 +916,9 @@ static void AllocateEverything(void)
 			MALLOC_VECTOR(EgridX,complex,temp_int,ALL);
 			MALLOC_VECTOR(EgridY,complex,temp_int,ALL);
 			if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-				shiftedEgridX_store=malloc_func(temp_int,num_used_n);
-				shiftedEgridY_store=malloc_func(temp_int,num_used_n);
+				temp_int=MultOverflow(temp_int,(size_t)num_used_n,ALL_POS_FUNC);
+				MALLOC_VECTOR(shiftedEgridX_store,complex,temp_int,ALL);
+				MALLOC_VECTOR(shiftedEgridY_store,complex,temp_int,ALL);
 			}
 		}
 		memory+=2*tmp*sizeof(doublecomplex);
@@ -945,8 +950,9 @@ static void AllocateEverything(void)
 				MALLOC_VECTOR(ampl_alphaX,complex,temp_int,ONE);
 				MALLOC_VECTOR(ampl_alphaY,complex,temp_int,ONE);
 				if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-					shiftedAmplAlphaX_store=malloc_func(temp_int,num_used_n);
-					shiftedAmplAlphaY_store=malloc_func(temp_int,num_used_n);
+					temp_int=MultOverflow(temp_int,(size_t)num_used_n,ALL_POS_FUNC);
+					MALLOC_VECTOR(shiftedAmplAlphaX_store,complex,temp_int,ALL);
+					MALLOC_VECTOR(shiftedAmplAlphaY_store,complex,temp_int,ALL);
 				}
 			}
 		}
@@ -1052,10 +1058,12 @@ void FreeEverything(void)
 			Free_cVector(vec2);
 			break;
 		case IT_SHIFTED_BICG_CS:
-			free(pArray);
-			free(xArray);
-			free(inprodRp1Array);
-			free(continue_flag);
+#ifndef OCL_BLAS
+			Free_cVector(pArray);
+#endif
+			Free_cVector(xArray);
+			Free_general(inprodRp1Array);
+			Free_general(continue_flag);
 
 			Free_cVector(lArray);
 			Free_cVector(dArray);
@@ -1075,20 +1083,16 @@ void FreeEverything(void)
 		Free_cVector(EyzplX);
 		Free_cVector(EyzplY);
 		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-			Free_general(shiftedEyzplX_store[0]);
-			Free_general(shiftedEyzplX_store);
-			Free_general(shiftedEyzplY_store[0]);
-			Free_general(shiftedEyzplY_store);
+			Free_cVector(shiftedEyzplX_store);
+			Free_cVector(shiftedEyzplY_store);
 		}
 	}
 	if (scat_plane) {
 		Free_cVector(EplaneX);
 		Free_cVector(EplaneY);
 		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-			Free_general(shiftedEplaneX_store[0]);
-			Free_general(shiftedEplaneX_store);
-			Free_general(shiftedEplaneY_store[0]);
-			Free_general(shiftedEplaneY_store);
+			Free_cVector(shiftedEplaneX_store);
+			Free_cVector(shiftedEplaneY_store);
 		}
 	}
 	if (all_dir) {
@@ -1103,10 +1107,8 @@ void FreeEverything(void)
 		Free_cVector(EgridX);
 		Free_cVector(EgridY);
 		if (IterMethod==IT_SHIFTED_BICG_CS && IFROOT) {
-			Free_general(shiftedEgridX_store[0]);
-			Free_general(shiftedEgridX_store);
-			Free_general(shiftedEgridY_store[0]);
-			Free_general(shiftedEgridY_store);
+			Free_cVector(shiftedEgridX_store);
+			Free_cVector(shiftedEgridY_store);
 		}
 		if (phi_integr && IFROOT) {
 			Free_general(muel_phi);
@@ -1123,10 +1125,8 @@ void FreeEverything(void)
 				Free_cVector(ampl_alphaX);
 				Free_cVector(ampl_alphaY);
 				if (IterMethod==IT_SHIFTED_BICG_CS) {
-					Free_general(shiftedAmplAlphaX_store[0]);
-					Free_general(shiftedAmplAlphaX_store);
-					Free_general(shiftedAmplAlphaY_store[0]);
-					Free_general(shiftedAmplAlphaY_store);
+					Free_cVector(shiftedAmplAlphaX_store);
+					Free_cVector(shiftedAmplAlphaY_store);
 				}
 				}
 				Free_general(muel_alpha-2);

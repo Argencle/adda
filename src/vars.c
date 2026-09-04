@@ -164,8 +164,8 @@ doublecomplex *lArray;
 doublecomplex *dArray;
 doublecomplex *sigmaArray;
 doublecomplex *uArray;
-doublecomplex **pArray;
-doublecomplex **xArray;
+doublecomplex *pArray;
+doublecomplex *xArray;
 double *inprodRp1Array;
 bool *continue_flag;
 int num_used_n; // number of used refractive indexes

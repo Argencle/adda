@@ -1358,8 +1358,9 @@ ITER_FUNC(Shifted_BiCG_CS)
 			lArray[i]=0;
 			uArray[i]=0;
 #ifndef OCL_BLAS
-			nInit(pArray[i]);
-			nInit(xArray[i]);
+			const size_t offset=(size_t)i*local_nRows;
+			nInit(pArray+offset);
+			nInit(xArray+offset);
 #endif
 			sigmaArray[i]=1/shifted_cc[i][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
 			continue_flag[i]=true;
@@ -1444,25 +1445,25 @@ ITER_FUNC(Shifted_BiCG_CS)
 				dArray[i]=alfa1+sigmaArray[i]-beta_pr*lArray[i];
 				if(niter==1) uArray[i]=beta_pr;
 				else uArray[i]=-lArray[i]*uArray[i];
+				const size_t offset=(size_t)i*local_nRows;
+				const doublecomplex xcoef=uArray[i]/dArray[i];
 				// pArray[i]=vcur-lArray[i]*pArray[i]
 #ifdef OCL_BLAS
-				const size_t offset=(size_t)i*local_nRows;
 				cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
 				CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,NULL));
 				cl_double2 clunit = {.s={1,0}};
 				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,NULL,
 					NULL));
 #else
-				nIncrem10_cmplx(pArray[i],vcur,-lArray[i],NULL,&Timing_OneIterComm);
+				nIncrem10_cmplx(pArray+offset,vcur,-lArray[i],NULL,&Timing_OneIterComm);
 #endif
 				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
-				const doublecomplex xcoef=uArray[i]/dArray[i];
 #ifdef OCL_BLAS
 				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
 				CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,&command_queue,
 					0,NULL,NULL));
 #else
-				nIncrem01_cmplx(xArray[i],pArray[i],xcoef,NULL,&Timing_OneIterComm);
+				nIncrem01_cmplx(xArray+offset,pArray+offset,xcoef,NULL,&Timing_OneIterComm);
 #endif
 				//current residual
 				// r_k = -(u_k/d_k)*vtmp
@@ -1947,10 +1948,10 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 #ifdef OCL_BLAS
 		tstart=GET_TIME();
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxArray,CL_TRUE,0,(size_t)num_used_n*local_nRows*
-			sizeof(doublecomplex),xArray[0],0,NULL,NULL));
+			sizeof(doublecomplex),xArray,0,NULL,NULL));
 		Timing_BufxArrayReadback+=GET_TIME()-tstart;
 #endif
-		nCopy(xvec,xArray[0]);
+		nCopy(xvec,xArray);
 		// TODO: If we use recalc_resid then we have to calculate rvec here,
 		// and explicitly multiply a matrix by a vector (A.x), because in the shifted solver, res is a number.
 	}
@@ -1974,7 +1975,7 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	if ((fp2 = fopen("xvec after iter alg (ADDA).txt", "w")) == NULL) printf("File is not open");
 	for(size_t i=0;i<local_nRows;i++) fprintf(fp2,"%.30f + %.30f*I,\n", creal(xvec[i]), cimag(xvec[i]));
 	fclose(fp2);*/
-	if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,xArray[0]);
+	if (IterMethod==IT_SHIFTED_BICG_CS) nCopy(pvec,xArray);
 	else if (MatVecMode==MV_STANDARD) nCopy(pvec,xvec);
 	else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
