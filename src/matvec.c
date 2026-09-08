@@ -49,6 +49,19 @@ extern size_t TotalMatVec;
 void FreeEverything(void); // for proper finalization
 #endif
 
+//======================================================================================================================
+
+static inline void SynchronizeMatVecStart(void)
+/* Solver-side vector operations can leave MPI ranks desynchronized before MatVec. Without this barrier, faster ranks
+ * wait at the first collective operation inside MatVec and that waiting is incorrectly included in MatVec timing. The
+ * same ranks would have to wait there anyway, so moving the wait before the timer is not expected to change total time.
+ */
+{
+#ifdef ADDA_MPI
+	Synchronize();
+#endif
+}
+
 #ifndef SPARSE
 //======================================================================================================================
 
@@ -189,6 +202,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 * For (her) three additional operations of nConj are used. Should not be a problem, but can be avoided by a more
 	 * complex code.
 	 */
+	SynchronizeMatVecStart();
 	TIME_TYPE tstart=GET_TIME();
 	transposed=(!reduced_FFT) && her;
 	ipr=(inprod!=NULL);
@@ -466,6 +480,7 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	const bool ipr = (inprod != NULL);
 	size_t i,j,i3;
 
+	SynchronizeMatVecStart();
 	TIME_TYPE tstart=GET_TIME();
 	if (her) nConj(argvec);
 	if (mode==MV_SYMMETRIZED) {

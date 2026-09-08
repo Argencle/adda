@@ -65,8 +65,8 @@ extern const char *chp_dir;
 extern time_t last_chp_wt;
 extern TIME_TYPE Timing_OneIter,Timing_OneIterComm,Timing_InitIter,Timing_InitIterComm,Timing_IntFieldOneComm,
 	Timing_MVP,Timing_MVPComm,Timing_OneIterMVP,Timing_OneIterMVPComm;
-#ifdef OCL_BLAS
-extern TIME_TYPE Timing_BufxArrayReadback;
+#ifdef OPENCL
+extern TIME_TYPE Timing_GPUReadback;
 #endif
 extern size_t TotalIter;
 
@@ -746,12 +746,14 @@ ITER_FUNC(BiCG_CS)
 			my_clReleaseBuffer(bufro_new);
 			my_clReleaseBuffer(bufmu);
 			if (inprodRp1<epsB){
+				TIME_TYPE readback_start=GET_TIME();
 				CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufpvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,pvec,0,
 					NULL,NULL));
 				CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufrvec,CL_FALSE,0,sizeof(doublecomplex)*local_nRows,rvec,0,
 					NULL,NULL));
 				CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxvec,CL_TRUE,0,sizeof(doublecomplex)*local_nRows,xvec,0,
 					NULL,NULL));
+				Timing_GPUReadback+=GET_TIME()-readback_start;
 			}
 #endif
 			// initialize ro_old -> ro_k-2 for next iteration
@@ -1371,13 +1373,6 @@ ITER_FUNC(Shifted_BiCG_CS)
 #ifdef OCL_BLAS
 		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
 #endif
-#ifdef ADDA_MPI
-		/* The shifted vector updates scale with local_nRows*num_used_n and may desynchronize MPI ranks. Synchronize
-		 * before MatVec to prevent this imbalance from being incorrectly included in the MatVec timing at the first
-		 * BlockTranspose barrier.
-		 */
-		Synchronize();
-#endif
 		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_INTERACTION,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
 		// alfa1
 #ifdef OCL_BLAS
@@ -1780,8 +1775,8 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	 * different vector. To avoid confusion this is done before any other initializations specific to iterative solvers.
 	 */
 	Timing_InitIterComm=Timing_MVP=Timing_MVPComm=0;
-#ifdef OCL_BLAS
-	Timing_BufxArrayReadback=0;
+#ifdef OPENCL
+	Timing_GPUReadback=0;
 #endif
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
@@ -1949,10 +1944,12 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	}
 	if (IterMethod==IT_SHIFTED_BICG_CS){
 #ifdef OCL_BLAS
+		// Exclude any earlier GPU work from the timing of the final shifted-solutions readback.
+		CL_CH_ERR(clFinish(command_queue));
 		tstart=GET_TIME();
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufxArray,CL_TRUE,0,(size_t)num_used_n*local_nRows*
 			sizeof(doublecomplex),xArray,0,NULL,NULL));
-		Timing_BufxArrayReadback+=GET_TIME()-tstart;
+		Timing_GPUReadback+=GET_TIME()-tstart;
 #endif
 		// TODO: If we use recalc_resid then we have to calculate rvec here,
 		// and explicitly multiply a matrix by a vector (A.x), because in the shifted solver, res is a number.

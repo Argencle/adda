@@ -61,8 +61,9 @@ TIME_TYPE Timing_OneIter,Timing_OneIterComm,       // for one iteration: total &
           Timing_IntFieldOneComm,                  // comm for one calculation of the internal fields
           Timing_MVP,Timing_MVPComm,               // total & comm time for MatVec during one run of iterative solver
           Timing_OneIterMVP,Timing_OneIterMVPComm; // total & comm time for MatVec during one iteration
-#ifdef OCL_BLAS
-TIME_TYPE Timing_BufxArrayReadback; // GPU-to-CPU readback of all shifted solutions
+#ifdef OPENCL
+// Large vector readbacks: MatVec results in OCL or final solver vectors in OCL_BLAS
+TIME_TYPE Timing_GPUReadback;
 #endif
 size_t TotalIter;                               // total number of iterations performed
 // used in make_particle.c
@@ -207,9 +208,9 @@ void FinalStatistics(void)
 #endif
 			fprintf(logfile,
 				"      matvec products:     "FFORMT"\n",TO_SEC(Timing_MVP));
-#ifdef OCL_BLAS
-			if (IterMethod==IT_SHIFTED_BICG_CS) fprintf(logfile,
-				"      readback x GPU->CPU: "FFORMT"\n",TO_SEC(Timing_BufxArrayReadback));
+#ifdef OPENCL
+			fprintf(logfile,
+				"      vector readback:     "FFORMT"\n",TO_SEC(Timing_GPUReadback));
 #endif
 #ifdef PARALLEL
 			fprintf(logfile,

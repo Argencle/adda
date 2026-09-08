@@ -42,6 +42,7 @@
 extern const size_t RsizeY,clxslices,local_gridX,slicesize;
 // defined and initialized in timing.c
 extern size_t TotalMatVec;
+extern TIME_TYPE Timing_GPUReadback;
 
 // EXTERNAL FUNCTIONS
 
@@ -209,9 +210,16 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		CL_CH_ERR(clSetKernelArg(clnConj,0,sizeof(cl_mem),&bufresultvec));
 		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clnConj,1,NULL,&local_nRows,NULL,0,NULL,NULL));
 	}
-	// blocking read to finalize queue
-	if (bufupload) CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufresultvec,CL_TRUE,0,local_nRows*sizeof(doublecomplex),
-		resultvec,0,NULL,NULL));
+	if (bufupload) {
+		/* Finish the queued MatVec work before timing its result readback. The blocking read below would wait for the same
+		 * work anyway, so this only separates GPU computation from transfer time and is not expected to change total time.
+		 */
+		CL_CH_ERR(clFinish(command_queue));
+		const TIME_TYPE readback_start=GET_TIME();
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufresultvec,CL_TRUE,0,local_nRows*sizeof(doublecomplex),resultvec,0,
+			NULL,NULL));
+		Timing_GPUReadback+=GET_TIME()-readback_start;
+	}
 	/* In OCL_BLAS mode the iterative solver keeps vectors on the device (bufupload=false), so there is no blocking read
 	 * above to finalize the queue. Explicitly wait here to ensure that MatVec timing includes the GPU execution rather
 	 * than only the time needed to enqueue its operations.
