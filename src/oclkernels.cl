@@ -102,6 +102,21 @@ __kernel void arith1(__global const uchar *material,__global const ushort *posit
 
 //======================================================================================================================
 
+__kernel void arith1_electric(__global const uchar *material,__global const ushort *position,__constant double2 *cc,
+	__global const double2 *argvec,__global double2 *Xmatrix,const in_sizet local_Nsmall,const in_sizet smallY,
+	const in_sizet gridX)
+{
+	const size_t id=get_global_id(0);
+	const size_t j=3*id;
+	const uchar mat=material[id];
+	const size_t index=((position[j+2]*smallY+position[j+1])*gridX+position[j]);
+	int xcomp;
+
+	for (xcomp=0;xcomp<3;xcomp++) cMult(&cc[mat*3+xcomp],&argvec[j+xcomp],&Xmatrix[index+xcomp*local_Nsmall]);
+}
+
+//======================================================================================================================
+
 __kernel void arith1_raw(__global const ushort *position,__global const double2 *argvec,__global double2 *Xmatrix,
 	const in_sizet local_Nsmall,const in_sizet smallY,const in_sizet gridX)
 {
@@ -425,6 +440,39 @@ __kernel void arith5_raw(__global const ushort *position,__global const double2 
 
 	index = ((position[j+2]*smallY+position[j+1])*gridX+position[j]);
 	for (xcomp=0;xcomp<3;xcomp++) resultvec[j+xcomp]=Xmatrix[index+xcomp*local_Nsmall];
+}
+
+//======================================================================================================================
+
+__kernel void arith5_electric(__global const ushort *position,__global const double2 *argvec,
+	__global const double2 *Xmatrix,const in_sizet local_Nsmall,const in_sizet smallY,const in_sizet gridX,
+	__global double2 *resultvec)
+{
+	const size_t id=get_global_id(0);
+	const size_t j=3*id;
+	const size_t index=((position[j+2]*smallY+position[j+1])*gridX+position[j]);
+	int xcomp;
+
+	for (xcomp=0;xcomp<3;xcomp++) resultvec[j+xcomp]=argvec[j+xcomp]+Xmatrix[index+xcomp*local_Nsmall];
+}
+
+//======================================================================================================================
+
+__kernel void arith5_electric_her(__global const uchar *material,__global const ushort *position,
+	__constant double2 *cc,__global const double2 *argvec,__global const double2 *Xmatrix,
+	const in_sizet local_Nsmall,const in_sizet smallY,const in_sizet gridX,__global double2 *resultvec)
+{
+	const size_t id=get_global_id(0);
+	const size_t j=3*id;
+	const uchar mat=material[id];
+	const size_t index=((position[j+2]*smallY+position[j+1])*gridX+position[j]);
+	int xcomp;
+	double2 interaction;
+
+	for (xcomp=0;xcomp<3;xcomp++) {
+		cMult2(&cc[mat*3+xcomp],&Xmatrix[index+xcomp*local_Nsmall],&interaction);
+		resultvec[j+xcomp]=argvec[j+xcomp]+interaction;
+	}
 }
 
 //======================================================================================================================

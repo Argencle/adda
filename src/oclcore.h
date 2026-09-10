@@ -39,8 +39,8 @@
 extern cl_context context;
 extern bool bufupload;
 extern cl_command_queue command_queue;
-extern cl_kernel clzero,clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,
-	clarith5_standard,
+extern cl_kernel clzero,clarith1,clarith1_electric,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,
+	clarith5_raw,clarith5_electric,clarith5_electric_her,clarith5_standard,
 	clnConj,clinprod,cltransposeof,cltransposeob,cltransposeofR;
 extern cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;

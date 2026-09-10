@@ -181,7 +181,13 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 * A = D + C^(-1)
 	 * A.x = D.x + C^(-1).x
 	 *
-	 * C,S - diagonal => symmetric
+	 * MV_ELECTRIC_FIELD:
+	 * A = I + D.C
+	 * A.x = x + D.(C.x)
+	 * A(H).x = x + C(H).D(H).x
+	 *
+	 * C,S,D are symmetric individually, but D.C is generally non-symmetric unless C commutes with D (e.g. C=cI).
+	 * C and S are currently diagonal
 	 * (!! will change if tensor (non-diagonal) polarizability is used !!)
 	 * D - symmetric except for interactions which break the reciprocity of the Green's tensor (none currently)
 	 *
@@ -230,14 +236,19 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	for (i=0;i<local_nvoid_Ndip;i++) {
 		j=3*i;
 		index=IndexXmatrix(position[j],position[j+1],position[j+2]);
-		if (mode!=MV_SYMMETRIZED) {
-			// Xmat=argvec
-			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=argvec[j+Xcomp];
-		}
-		else {
+		if (mode==MV_SYMMETRIZED) {
 			mat=material[i];
 			// Xmat=cc_sqrt*argvec
 			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=cc_sqrt[mat][Xcomp]*argvec[j+Xcomp];
+		}
+		else if (mode==MV_ELECTRIC_FIELD && !her) {
+			mat=material[i];
+			// Forward product starts with C.x; for A(H), C(H) is applied after D(H).
+			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=cc[mat][Xcomp]*argvec[j+Xcomp];
+		}
+		else {
+			// Xmat=argvec
+			for (Xcomp=0;Xcomp<3;Xcomp++) Xmatrix[index+Xcomp*local_Nsmall]=argvec[j+Xcomp];
 		}
 	}
 #ifdef PRECISE_TIMING
@@ -382,16 +393,23 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	for (i=0;i<local_nvoid_Ndip;i++) {
 		j=3*i;
 		index=IndexXmatrix(position[j],position[j+1],position[j+2]);
-		if (mode!=MV_SYMMETRIZED) {
+		if (mode==MV_STANDARD || mode==MV_INTERACTION) {
 			for (Xcomp=0;Xcomp<3;Xcomp++) {
 				resultvec[j+Xcomp]=Xmatrix[index+Xcomp*local_Nsmall];
 				if (mode==MV_STANDARD) resultvec[j+Xcomp]+=argvec[j+Xcomp]/cc[material[i]][Xcomp];
 			}
 		}
-		else {
+		else if (mode==MV_SYMMETRIZED) {
 			mat=material[i];
 			for (Xcomp=0;Xcomp<3;Xcomp++) // result=argvec+cc_sqrt*Xmat
 				resultvec[j+Xcomp]=argvec[j+Xcomp]+cc_sqrt[mat][Xcomp]*Xmatrix[index+Xcomp*local_Nsmall];
+		}
+		else { // MV_ELECTRIC_FIELD
+			mat=material[i];
+			for (Xcomp=0;Xcomp<3;Xcomp++) {
+				const doublecomplex interaction=Xmatrix[index+Xcomp*local_Nsmall];
+				resultvec[j+Xcomp]=argvec[j+Xcomp]+(her ? cc[mat][Xcomp]*interaction : interaction);
+			}
 		}
 		// norm is unaffected by conjugation, hence can be computed here
 		if (ipr) *inprod+=cvNorm2(resultvec+j);
@@ -487,6 +505,12 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 		// TODO: can be replaced by nMult_mat
 		for (j=0; j<local_nvoid_Ndip; j++) CcMul(argvec,arg_full+3*local_nvoid_d0,j);
 	}
+	else if (mode==MV_ELECTRIC_FIELD && !her) {
+		for (j=0;j<local_nvoid_Ndip;j++) {
+			const size_t j3=3*j;
+			for (i=0;i<3;i++) arg_full[3*local_nvoid_d0+j3+i]=argvec[j3+i]*cc[material[j]][i];
+		}
+	}
 	else for (j=0; j<local_nRows; j++) arg_full[3*local_nvoid_d0+j]=argvec[j];
 #	ifdef PARALLEL
 	AllGather(NULL,arg_full,cmplx3_type,comm_timing);
@@ -499,6 +523,13 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	if (mode==MV_SYMMETRIZED) {
 		// TODO: can be replaced by a specially designed function from linalg.c
 		for (i=0; i<local_nvoid_Ndip; i++) DiagProd(argvec,resultvec,i);
+	}
+	else if (mode==MV_ELECTRIC_FIELD) {
+		for (i=0;i<local_nvoid_Ndip;i++) {
+			i3=3*i;
+			for (j=0;j<3;j++)
+				resultvec[i3+j]=argvec[i3+j]-(her ? cc[material[i]][j]*resultvec[i3+j] : resultvec[i3+j]);
+		}
 	}
 	else for (i=0;i<local_nvoid_Ndip;i++) {
 		i3=3*i;

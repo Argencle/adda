@@ -29,6 +29,7 @@
 #include "vars.h"
 #include "param.h"
 // system headers
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -593,6 +594,43 @@ static void CoupleConstant(doublecomplex *mrel,const enum incpol which,doublecom
 
 //======================================================================================================================
 
+static bool SameCouplingConstant(const doublecomplex a,const doublecomplex b)
+// compare values that should be identical apart from round-off during their independent calculation
+{
+	return cabs(a-b)<=32*DBL_EPSILON*fmax(1,fmax(cabs(a),cabs(b)));
+}
+
+//======================================================================================================================
+
+static bool IterativeMethodRequiresComplexSymmetry(void)
+{
+	switch (IterMethod) {
+		case IT_BICG_CS:
+		case IT_CSYM:
+		case IT_QMR_CS:
+		case IT_QMR_CS_2:
+		case IT_SHIFTED_BICG_CS:
+			return true;
+		case IT_BCGS2:
+		case IT_BICGSTAB:
+		case IT_CGNR:
+			return false;
+	}
+	LogError(ONE_POS,"Unknown iterative method (%d)",(int)IterMethod);
+}
+
+//======================================================================================================================
+
+static bool CouplingConstantIsUniformScalar(void)
+{
+	const doublecomplex scalar=cc[0][0];
+	for (int i=0;i<Nmat;i++) for (int j=0;j<3;j++)
+		if (!SameCouplingConstant(cc[i][j],scalar)) return false;
+	return true;
+}
+
+//======================================================================================================================
+
 static void InitCC(const enum incpol which)
 // calculate cc, cc_sqrt, and chi_inv
 {
@@ -609,6 +647,10 @@ static void InitCC(const enum incpol which)
 		// copy first component of chi_inv[i] into other two, if they are not calculated explicitly
 		if (!anisotropy) chi_inv[i][2]=chi_inv[i][1]=chi_inv[i][0];
 	}
+	if (MatVecMode==MV_ELECTRIC_FIELD && IterativeMethodRequiresComplexSymmetry() &&
+		!CouplingConstantIsUniformScalar())
+		PrintError("The selected complex-symmetric iterative solver requires a uniform scalar C=cI with "
+			"'-linear_form electric_field'; use bcgs2, bicgstab, or cgnr for the general case");
 #ifdef OPENCL
 	/* this is done here, since InitCC can be run between different runs of the iterative solver; write is blocking to
 	 * ensure completion before function end
@@ -627,6 +669,9 @@ static void InitShiftedCC(const int idx,const enum incpol which)
 	doublecomplex m=shifted_ref_index[idx];
 
 	CoupleConstant(&m,which,shifted_cc[idx]);
+	if (!SameCouplingConstant(shifted_cc[idx][1],shifted_cc[idx][0]) ||
+		!SameCouplingConstant(shifted_cc[idx][2],shifted_cc[idx][0]))
+		PrintError("'-iter sbicg' requires a scalar coupling constant C=cI for every shifted system");
 	for(j=0;j<3;j++) shifted_cc_sqrt[idx][j]=csqrt(shifted_cc[idx][j]);
 	shifted_chi_inv[idx][0]=FOUR_PI/(dipvol*(m*m-1));
 	shifted_chi_inv[idx][2]=shifted_chi_inv[idx][1]=shifted_chi_inv[idx][0];

@@ -493,10 +493,12 @@ static struct opt_struct options[]={
 		"defined by some shapes themselves, then this option can be used to override the internal specification and "
 		"scale the shape.\n"
 		"Default: determined by the value of '-size' or by '-grid', '-dpl', '-lambda', and '-rect_dip'.",1,NULL},
-	{PAR(linear_form),"{standard|symmetrized}","Sets the formulation of the linear system. The standard formulation solves "
+	{PAR(linear_form),"{standard|symmetrized|electric_field}","Sets the formulation of the linear system. The standard formulation solves "
 		"(D+C^(-1))P=E_inc; the symmetrized formulation solves "
-		"(I+sqrt(C)Dsqrt(C))x=sqrt(C)E_inc.\n"
-		"The 'sbicg' solver supports only the standard (shifted) formulation.\nDefault: symmetrized",1,NULL},
+		"(I+sqrt(C)Dsqrt(C))x=sqrt(C)E_inc; and the electric-field formulation solves "
+		"(I+DC)E_exc=E_inc, where P=C E_exc. The latter is directly compatible with general non-symmetric solvers; "
+		"complex-symmetric solvers require a uniform scalar C.\n"
+		"The 'sbicg' solver supports the standard and electric-field formulations.\nDefault: symmetrized",1,NULL},
 #ifdef OPENCL
 	{PAR(gpu),"<index>","Specifies index of GPU that should be used (starting from 0). Relevant only for OpenCL "
 		"version of ADDA, running on a system with several GPUs.\n"
@@ -1156,6 +1158,7 @@ PARSE_FUNC(linear_form)
 	linear_form_used=true;
 	if (strcmp(argv[1],"standard")==0) MatVecMode=MV_STANDARD;
 	else if (strcmp(argv[1],"symmetrized")==0 || strcmp(argv[1],"symm")==0) MatVecMode=MV_SYMMETRIZED;
+	else if (strcmp(argv[1],"electric_field")==0) MatVecMode=MV_ELECTRIC_FIELD;
 	else NotSupported("Linear-system formulation",argv[1]);
 }
 #ifdef OPENCL
@@ -2327,8 +2330,9 @@ void VariablesInterconnect(void)
 		PrintError("Currently '-iter sbicg' supports only '-init_field zero'");
 	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
 		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
-	if (IterMethod==IT_SHIFTED_BICG_CS && linear_form_used && MatVecMode!=MV_STANDARD)
-		PrintError("'-iter sbicg' supports only '-linear_form standard'");
+	if (IterMethod==IT_SHIFTED_BICG_CS && linear_form_used && MatVecMode!=MV_STANDARD &&
+		MatVecMode!=MV_ELECTRIC_FIELD)
+		PrintError("'-iter sbicg' supports only '-linear_form standard' or '-linear_form electric_field'");
 #ifdef SPARSE
 	if (shape==SH_SPHERE) PrintError("Sparse mode requires shape to be read from file (-shape read ...)");
 #endif
@@ -2747,12 +2751,16 @@ void PrintInfo(void)
 			case IT_QMR_CS_2: fprintf(logfile,"2-term QMR (complex symmetric)\n"); break;
 			case IT_SHIFTED_BICG_CS: fprintf(logfile,"Shifted BiCG (complex symmetric)\n"); break;
 		}
-		if (IterMethod==IT_SHIFTED_BICG_CS)
+		if (IterMethod==IT_SHIFTED_BICG_CS && MatVecMode==MV_ELECTRIC_FIELD)
+			fprintf(logfile,"Linear-system formulation: shifted electric field\n");
+		else if (IterMethod==IT_SHIFTED_BICG_CS)
 			fprintf(logfile,"Linear-system formulation: shifted standard\n");
 		else if (MatVecMode==MV_STANDARD)
 			fprintf(logfile,"Linear-system formulation: standard\n");
-		else
+		else if (MatVecMode==MV_SYMMETRIZED)
 			fprintf(logfile,"Linear-system formulation: symmetrized\n");
+		else
+			fprintf(logfile,"Linear-system formulation: electric field\n");
 		/* TO ADD NEW ITERATIVE SOLVER
 		 * add a case above in the alphabetical order, analogous to the ones already present. The variable parts of the
 		 * case are descriptor, defined in const.h, and its plain-text description (to be shown in log).

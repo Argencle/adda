@@ -39,8 +39,8 @@
  */
 cl_context context;
 cl_command_queue command_queue;
-cl_kernel clarith1,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,clarith5_standard,
-	clzero,clinprod,
+cl_kernel clarith1,clarith1_electric,clarith1_raw,clarith2,clarith3,clarith3_surface,clarith4,clarith5,clarith5_raw,
+	clarith5_electric,clarith5_electric_her,clarith5_standard,clzero,clinprod,
 	clnConj,cltransposeof,cltransposeob,cltransposeofR;
 cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultvec,bufslices,bufslices_tr,bufDmatrix,
 	bufinproduct;
@@ -448,6 +448,8 @@ void oclinit(void)
 	CL_CH_ERR(err);
 	clarith1=clCreateKernel(program,"arith1",&err);
 	CL_CH_ERR(err);
+	clarith1_electric=clCreateKernel(program,"arith1_electric",&err);
+	CL_CH_ERR(err);
 	clarith1_raw=clCreateKernel(program,"arith1_raw",&err);
 	CL_CH_ERR(err);
 	clarith2=clCreateKernel(program,"arith2",&err);
@@ -459,6 +461,10 @@ void oclinit(void)
 	clarith5=clCreateKernel(program,"arith5",&err);
 	CL_CH_ERR(err);
 	clarith5_raw=clCreateKernel(program,"arith5_raw",&err);
+	CL_CH_ERR(err);
+	clarith5_electric=clCreateKernel(program,"arith5_electric",&err);
+	CL_CH_ERR(err);
+	clarith5_electric_her=clCreateKernel(program,"arith5_electric_her",&err);
 	CL_CH_ERR(err);
 	clarith5_standard=clCreateKernel(program,"arith5_standard",&err);
 	CL_CH_ERR(err);
@@ -548,12 +554,15 @@ void oclunload(void)
 	CL_CH_ERR(clReleaseProgram(program));
 	CL_CH_ERR(clReleaseKernel(clzero));
 	CL_CH_ERR(clReleaseKernel(clarith1));
+	CL_CH_ERR(clReleaseKernel(clarith1_electric));
 	CL_CH_ERR(clReleaseKernel(clarith1_raw));
 	CL_CH_ERR(clReleaseKernel(clarith2));
 	CL_CH_ERR(clReleaseKernel(clarith3));
 	CL_CH_ERR(clReleaseKernel(clarith4));
 	CL_CH_ERR(clReleaseKernel(clarith5));
 	CL_CH_ERR(clReleaseKernel(clarith5_raw));
+	CL_CH_ERR(clReleaseKernel(clarith5_electric));
+	CL_CH_ERR(clReleaseKernel(clarith5_electric_her));
 	CL_CH_ERR(clReleaseKernel(clarith5_standard));
 	CL_CH_ERR(clReleaseKernel(clnConj));
 	CL_CH_ERR(clReleaseKernel(clinprod));

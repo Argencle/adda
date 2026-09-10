@@ -274,7 +274,8 @@ enum iter { // iterative methods
 enum matvec_mode { // matrix-vector product mode
 	MV_INTERACTION, // raw interaction operator: D.x
 	MV_STANDARD,    // standard system operator: D.x + C^(-1).x
-	MV_SYMMETRIZED  // symmetrized system operator: x + S.D.S.x
+	MV_SYMMETRIZED, // symmetrized system operator: x + S.D.S.x
+	MV_ELECTRIC_FIELD // exciting-field system operator: x + D.C.x
 };
 
 enum Eftype { // type of E field calculation

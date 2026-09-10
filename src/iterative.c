@@ -433,8 +433,8 @@ static double ResidualNorm2(doublecomplex * restrict x,doublecomplex * restrict 
 	MatVec(x,buffer,NULL,false,MatVecMode,mvp_timing,&mc_time);
 	(*mvp_comm_timing) += mc_time;
 	(*comm_timing) += mc_time;
-	if (MatVecMode==MV_STANDARD) nCopy(r,Einc);
-	else nMult_mat(r,Einc,cc_sqrt);
+	if (MatVecMode==MV_SYMMETRIZED) nMult_mat(r,Einc,cc_sqrt);
+	else nCopy(r,Einc);
 	nDecrem(r,buffer,&res,comm_timing);
 	return res;
 }
@@ -1432,6 +1432,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 				else uArray[i]=-lArray[i]*uArray[i];
 				const size_t offset=(size_t)i*local_nRows;
 				const doublecomplex xcoef=uArray[i]/dArray[i];
+				const doublecomplex solution_xcoef=MatVecMode==MV_ELECTRIC_FIELD ? sigmaArray[i]*xcoef : xcoef;
 				// pArray[i]=vcur-lArray[i]*pArray[i]
 #ifdef OCL_BLAS
 				if (niter==1) {
@@ -1451,7 +1452,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 #endif
 				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
 #ifdef OCL_BLAS
-				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
+				cl_double2 clxcoef = {.s={creal(solution_xcoef),cimag(solution_xcoef)}};
 				if (niter==1) {
 					CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufpArray,bufxArray,offset*sizeof(doublecomplex),
 						offset*sizeof(doublecomplex),sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
@@ -1460,8 +1461,8 @@ ITER_FUNC(Shifted_BiCG_CS)
 				else CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,
 					&command_queue,0,NULL,NULL));
 #else
-				if (niter==1) nMult_cmplx(xArray+offset,pArray+offset,xcoef);
-				else nIncrem01_cmplx(xArray+offset,pArray+offset,xcoef,NULL,&Timing_OneIterComm);
+				if (niter==1) nMult_cmplx(xArray+offset,pArray+offset,solution_xcoef);
+				else nIncrem01_cmplx(xArray+offset,pArray+offset,solution_xcoef,NULL,&Timing_OneIterComm);
 #endif
 				//current residual
 				// r_k = -(u_k/d_k)*vtmp
@@ -1691,7 +1692,9 @@ static void InitFieldfromE(void)
 	int i,j;
 	for (i=0;i<Nmat;i++) for (j=0;j<3;j++) {
 		if (MatVecMode==MV_STANDARD) mult[i][j]=1/chi_inv[i][j]; // P=V.chi.E
-		else mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]); // x=C^(-1/2).P
+		else if (MatVecMode==MV_SYMMETRIZED)
+			mult[i][j]=1/(cc_sqrt[i][j]*chi_inv[i][j]); // x=C^(-1/2).P
+		else mult[i][j]=1/(cc[i][j]*chi_inv[i][j]); // E_exc=C^(-1).P
 	}
 	nMultSelf_mat(xvec,mult);
 	// calculate A.x_0, r_0=b-A.x_0, and |r_0|^2
@@ -1768,8 +1771,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	time_tmp=time_tmp2=time_tmp3=0;
 
 	/* The standard formulation solves (D+C^(-1)).P=Einc. The symmetrized formulation solves
-	 * (I+S.D.S).x=S.Einc, where S=sqrt(C) and x=S^(-1).P. Both matrices are complex symmetric for the currently
-	 * supported diagonal C; the latter is also Jacobi-preconditioned.
+	 * (I+S.D.S).x=S.Einc, where S=sqrt(C) and x=S^(-1).P. The electric-field formulation solves
+	 * (I+D.C).E_exc=Einc, where P=C.E_exc. The first two matrices are complex symmetric for the currently supported
+	 * diagonal C. The last one is generally non-symmetric unless C is a uniform scalar.
 	 */
 	/* p is the right-hand side of the linear system; used only here. In iteration methods themselves p is a completely
 	 * different vector. To avoid confusion this is done before any other initializations specific to iterative solvers.
@@ -1781,7 +1785,7 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	tstart=GET_TIME();
 	matvec_ready=false; // can be set to true only in CalcInitField (if !load_chpoint)
 	if (!load_chpoint) {
-		if (IterMethod==IT_SHIFTED_BICG_CS || MatVecMode==MV_STANDARD) nCopy(pvec,Einc);
+		if (IterMethod==IT_SHIFTED_BICG_CS || MatVecMode!=MV_SYMMETRIZED) nCopy(pvec,Einc);
 		else nMult_mat(pvec,Einc,cc_sqrt);
 		temp=nNorm2(pvec,&Timing_InitIterComm); // |r_0|^2 when x_0=0
 		resid_scale=1/temp;
@@ -1943,6 +1947,21 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 			"number of iterations (%d)",params[ind_m].mc);
 	}
 	if (IterMethod==IT_SHIFTED_BICG_CS){
+		/* Shifted BiCG naturally produces P_i for (D+C_i^(-1))P_i=Einc. In electric-field mode its iterates are
+		 * scaled by C_i^(-1), so convert the final E_exc,i back to P_i before the common post-processing path.
+		 */
+		if (MatVecMode==MV_ELECTRIC_FIELD) {
+#ifdef OCL_BLAS
+			for (int i=0;i<num_used_n;i++) {
+				const cl_double2 clcc={.s={creal(shifted_cc[i][0]),cimag(shifted_cc[i][0])}};
+				CLBLAS_CH_ERR(clblasZscal(local_nRows,clcc,bufxArray,(size_t)i*local_nRows,1,1,&command_queue,0,
+					NULL,NULL));
+			}
+#else
+			for (int i=0;i<num_used_n;i++)
+				nMultSelf_cmplx(xArray+(size_t)i*local_nRows,shifted_cc[i][0]);
+#endif
+		}
 #ifdef OCL_BLAS
 		// Exclude any earlier GPU work from the timing of the final shifted-solutions readback.
 		CL_CH_ERR(clFinish(command_queue));
@@ -1977,7 +1996,9 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 	// CalculateE loads each shifted polarization directly from xArray, so no intermediate copy to pvec is needed.
 	if (IterMethod!=IT_SHIFTED_BICG_CS) {
 		if (MatVecMode==MV_STANDARD) nCopy(pvec,xvec);
-		else nMult_mat(pvec,xvec,cc_sqrt); // p now contains polarizations. Can be used to calculate e.g. scattered field faster.
+		else if (MatVecMode==MV_SYMMETRIZED) nMult_mat(pvec,xvec,cc_sqrt);
+		else nMult_mat(pvec,xvec,cc);
+		// p now contains polarizations and can be used to calculate e.g. scattered fields faster.
 	}
 	if (chp_exit) return CHP_EXIT; // check if exiting after checkpoint
 	return (niter-1); // the number of iterations elapsed

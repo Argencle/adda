@@ -93,12 +93,19 @@ unsigned char * restrict material;  // material: index for cc
 
 // iterative solver
 enum iter IterMethod; // iterative method to use
-enum matvec_mode MatVecMode; // linear-system formulation for non-shifted iterative solvers
+enum matvec_mode MatVecMode; // linear-system formulation used by the iterative solver
 int maxiter;          // maximum number of iterations
 	// the following two can't be declared restrict due to SwapPointers
-doublecomplex *xvec;  // total electric field at the voxel centers (P in standard mode, C^(-1/2).P in symmetrized mode)
+doublecomplex *xvec;  // linear-system unknown: P, C^(-1/2).P, or exciting field C^(-1).P
 doublecomplex *pvec;  // voxel polarizations, also an auxiliary vector in iterative solvers
 doublecomplex * restrict Einc;    // incident field at voxel centers
+
+// Shifted BiCG-CS solver
+doublecomplex *lArray,*dArray,*sigmaArray,*uArray;
+doublecomplex *pArray,*xArray;
+double *inprodRp1Array;
+bool *continue_flag;
+int num_used_n; // number of used refractive indices
 
 // scattering at different angles
 int nTheta;                        // number of angles in scattering profile
@@ -158,17 +165,6 @@ int local_Nz_unif;        /* number of z layers (distance between max and min va
 int local_z1_coer;        // ending z, coerced to be not greater than boxZ (and not smaller than local_z0)
 	// starting, ending x for current processor and number of x layers (based on the division of smallX)
 size_t local_x0,local_x1,local_Nx;
-
-// For Shifted BiCG CS algorithm:
-doublecomplex *lArray;
-doublecomplex *dArray;
-doublecomplex *sigmaArray;
-doublecomplex *uArray;
-doublecomplex *pArray;
-doublecomplex *xArray;
-double *inprodRp1Array;
-bool *continue_flag;
-int num_used_n; // number of used refractive indexes
 
 #else // These variables are exclusive to the sparse mode
 

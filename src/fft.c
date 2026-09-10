@@ -1192,6 +1192,15 @@ void InitDmatrix(void)
 		CL_CH_ERR(clSetKernelArg(clarith1,5,sizeof(size_t),&local_Nsmall));
 		CL_CH_ERR(clSetKernelArg(clarith1,6,sizeof(size_t),&smallY));
 		CL_CH_ERR(clSetKernelArg(clarith1,7,sizeof(size_t),&gridX));
+		// for arith1_electric
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,0,sizeof(cl_mem),&bufmaterial));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,1,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,2,sizeof(cl_mem),&bufcc));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,3,sizeof(cl_mem),&bufargvec));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,4,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,5,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,6,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith1_electric,7,sizeof(size_t),&gridX));
 		// for arith1_raw
 		CL_CH_ERR(clSetKernelArg(clarith1_raw,0,sizeof(cl_mem),&bufposition));
 		CL_CH_ERR(clSetKernelArg(clarith1_raw,1,sizeof(cl_mem),&bufargvec));
@@ -1240,6 +1249,24 @@ void InitDmatrix(void)
 		CL_CH_ERR(clSetKernelArg(clarith5_raw,3,sizeof(size_t),&smallY));
 		CL_CH_ERR(clSetKernelArg(clarith5_raw,4,sizeof(size_t),&gridX));
 		CL_CH_ERR(clSetKernelArg(clarith5_raw,5,sizeof(cl_mem),&bufresultvec));
+		// for arith5_electric
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,0,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,1,sizeof(cl_mem),&bufargvec));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,2,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,3,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,4,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,5,sizeof(size_t),&gridX));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric,6,sizeof(cl_mem),&bufresultvec));
+		// for arith5_electric_her
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,0,sizeof(cl_mem),&bufmaterial));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,1,sizeof(cl_mem),&bufposition));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,2,sizeof(cl_mem),&bufcc));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,3,sizeof(cl_mem),&bufargvec));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,4,sizeof(cl_mem),&bufXmatrix));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,5,sizeof(size_t),&local_Nsmall));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,6,sizeof(size_t),&smallY));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,7,sizeof(size_t),&gridX));
+		CL_CH_ERR(clSetKernelArg(clarith5_electric_her,8,sizeof(cl_mem),&bufresultvec));
 		// for arith5_standard
 		CL_CH_ERR(clSetKernelArg(clarith5_standard,0,sizeof(cl_mem),&bufmaterial));
 		CL_CH_ERR(clSetKernelArg(clarith5_standard,1,sizeof(cl_mem),&bufposition));

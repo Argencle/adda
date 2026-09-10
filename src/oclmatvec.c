@@ -69,9 +69,11 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	size_t j;
 	bool ipr,transposed;
 	size_t boxY_st=boxY,boxZ_st=boxZ; // copies with different type
-	const cl_kernel arith1_kernel = (mode==MV_SYMMETRIZED) ? clarith1 : clarith1_raw;
+	const cl_kernel arith1_kernel = mode==MV_SYMMETRIZED ? clarith1 :
+		(mode==MV_ELECTRIC_FIELD && !her ? clarith1_electric : clarith1_raw);
 	const cl_kernel arith5_kernel = mode==MV_SYMMETRIZED ? clarith5 :
-		(mode==MV_STANDARD ? clarith5_standard : clarith5_raw);
+		(mode==MV_STANDARD ? clarith5_standard :
+			(mode==MV_ELECTRIC_FIELD ? (her ? clarith5_electric_her : clarith5_electric) : clarith5_raw));
 
 	/* MV_SYMMETRIZED:
 	 * A = I + S.D.S
@@ -87,7 +89,13 @@ void MatVec (doublecomplex * restrict argvec,    // the argument vector
 	 * MV_STANDARD:
 	 * A = D + C^(-1)
 	 *
-	 * C,S - diagonal => symmetric
+	 * MV_ELECTRIC_FIELD:
+	 * A = I + D.C
+	 * A.x = x + D.(C.x)
+	 * A(H).x = x + C(H).D(H).x
+	 *
+	 * C,S,D are symmetric individually, but D.C is generally non-symmetric unless C commutes with D (e.g. C=cI).
+	 * C and S are currently diagonal
 	 * (!! will change if tensor (non-diagonal) polarizability is used !!)
 	 * D - symmetric except for interactions which break the reciprocity of the Green's tensor (none currently)
 	 *
