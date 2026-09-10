@@ -41,10 +41,7 @@
 #endif
 
 // SEMI-GLOBAL VARIABLES
-#ifdef DEBUG
-	static int shifted_convergence_iter[MAX_N_SHIFTED];
-	static double shifted_convergence_resid[MAX_N_SHIFTED];
-#endif
+static int shifted_convergence_iter[MAX_N_SHIFTED]; // first converged iteration for each shifted system
 // defined and initialized in calculator.c
 extern doublecomplex *rvec; // can't be declared restrict due to SwapPointers
 extern doublecomplex *vcur, *vpr, *vtmp, *vnext;
@@ -58,6 +55,7 @@ extern const double iter_eps;
 extern const enum init_field InitField;
 extern const char *infi_fnameY,*infi_fnameX;
 extern const bool recalc_resid;
+extern const bool store_shifted_convergence;
 extern const enum chpoint chp_type;
 extern const time_t chp_time;
 extern const char *chp_dir;
@@ -69,6 +67,7 @@ extern TIME_TYPE Timing_OneIter,Timing_OneIterComm,Timing_InitIter,Timing_InitIt
 extern TIME_TYPE Timing_GPUReadback;
 #endif
 extern size_t TotalIter;
+extern size_t TotalEval;
 
 // LOCAL VARIABLES
 
@@ -1356,11 +1355,10 @@ ITER_FUNC(Shifted_BiCG_CS)
 			uArray[i]=0;
 			sigmaArray[i]=1/shifted_cc[i][0]; // perhaps sigma is already calculated somewhere earlier in ADDA
 			continue_flag[i]=true;
-
-#ifdef DEBUG
-			shifted_convergence_iter[i]=-1;
-			shifted_convergence_resid[i]=0;
-#endif
+			if (store_shifted_convergence) {
+				inprodRp1Array[i]=1/resid_scale; // initial relative residual is one
+				shifted_convergence_iter[i]=-1;
+			}
 		}
 #ifdef OCL_BLAS
 		CL_CH_ERR(clFinish(command_queue));
@@ -1467,13 +1465,9 @@ ITER_FUNC(Shifted_BiCG_CS)
 				// r_k = -(u_k/d_k)*vtmp
 				inprodRp1Array[i] =
 					cAbs2(xcoef) * vtmp_norm2;
-#ifdef DEBUG
-				shifted_convergence_resid[i]=sqrt(resid_scale*inprodRp1Array[i]);
-#endif
 				if(inprodRp1Array[i]<=epsB) {
-#ifdef DEBUG
-					if (shifted_convergence_iter[i]<0) shifted_convergence_iter[i]=niter;
-#endif
+					if (store_shifted_convergence && shifted_convergence_iter[i]<0)
+						shifted_convergence_iter[i]=niter;
 					continue_flag[i]=false;
 				}
 				if(inprodRp1Array[i]>inprodRp1_max) inprodRp1_max=inprodRp1Array[i];
@@ -1859,12 +1853,12 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		 */
 		ProgressReport();
 	}
-#ifdef DEBUG
-	if (method_in==IT_SHIFTED_BICG_CS && IFROOT) {
+	if (store_shifted_convergence && method_in==IT_SHIFTED_BICG_CS && IFROOT) {
 		char fname[MAX_FNAME];
 		FILE *fp;
 		long file_size;
 		const char *polarization;
+		const TIME_TYPE io_start=GET_TIME();
 
 		if (which==INCPOL_Y)
 			polarization="Y";
@@ -1873,7 +1867,7 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 		else
 			polarization="unknown";
 
-		SnprintfErr(ONE_POS,fname,MAX_FNAME,"%s/shifted_convergence.dat",directory);
+		SnprintfErr(ONE_POS,fname,MAX_FNAME,"%s/"F_SHIFTED_CONV,directory);
 		fp=FOpenErr(fname,"a+",ONE_POS);
 
 		if (fseek(fp,0,SEEK_END)!=0) {
@@ -1894,38 +1888,46 @@ int IterativeSolver(const enum iter method_in,const enum incpol which)
 				"# Shifted BiCG-CS convergence information\n"
 				"#\n"
 				"# Columns:\n"
-				"# 1: incident polarization\n"
-				"# 2: shifted-system index\n"
-				"# 3: real part of refractive index\n"
-				"# 4: imaginary part of refractive index\n"
-				"# 5: convergence iteration (-1 if not converged)\n"
-				"# 6: final relative residual norm\n"
+				"# 1: orientation evaluation (one-based)\n"
+				"# 2-4: Euler angles alpha, beta, gamma (degrees)\n"
+				"# 5: incident polarization\n"
+				"# 6: shifted-system index\n"
+				"# 7: real part of refractive index\n"
+				"# 8: imaginary part of refractive index\n"
+				"# 9: convergence iteration (-1 if not converged)\n"
+				"# 10: estimated final relative residual norm\n"
 				"#\n"
-				"# pol  index  Re(m)  Im(m)  iterations"
-				"  relative_residual\n"
+				"# eval  alpha  beta  gamma  pol  index  Re(m)  Im(m)  iterations"
+				"  estimated_relative_residual\n"
 			);
 		}
 
-		fprintf(fp,"\n# Polarization %s\n",polarization);
+		/* TotalEval is incremented after both incident polarizations of the current orientation have been processed. */
+		fprintf(fp,"\n# Evaluation %zu: alpha=%.17e beta=%.17e gamma=%.17e; polarization %s\n",
+			TotalEval+1,alph_deg,bet_deg,gam_deg,polarization);
 
 		for (int shifted_i=0;
 			shifted_i<num_used_n;
 			shifted_i++) {
 			fprintf(
 				fp,
-				"%s  %d  %.17e  %.17e  %d  %.17e\n",
+				"%zu  %.17e  %.17e  %.17e  %s  %d  %.17e  %.17e  %d  %.17e\n",
+				TotalEval+1,
+				alph_deg,
+				bet_deg,
+				gam_deg,
 				polarization,
 				shifted_i,
 				creal(shifted_ref_index[shifted_i]),
 				cimag(shifted_ref_index[shifted_i]),
 				shifted_convergence_iter[shifted_i],
-				shifted_convergence_resid[shifted_i]
+				sqrt(resid_scale*inprodRp1Array[shifted_i])
 			);
 		}
 
 		FCloseErr(fp,fname,ONE_POS);
+		Timing_FileIO+=GET_TIME()-io_start;
 	}
-#endif
 	// Save checkpoint of type always
 	if (chp_type==CHP_ALWAYS && !chp_exit) SaveIterChpoint();
 	/* process incomplete convergence

@@ -380,6 +380,7 @@ enum init_field { // how to calculate initial field to be used in the iterative 
 #define F_LOG_ORAVG     "log_orient_avg"
 #define F_LOG_INT_CSCA  "log_int_Csca"
 #define F_LOG_INT_ASYM  "log_int_asym"
+#define F_SHIFTED_CONV  "shifted_convergence.dat"
 	// log suffixes
 #define F_LOG_X         "_x"
 #define F_LOG_Y         "_y"

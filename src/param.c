@@ -146,6 +146,7 @@ enum init_field InitField; // how to calculate initial field for the iterative s
 const char *infi_fnameY;   // names of files, defining the initial field (for two polarizations)
 const char *infi_fnameX;
 bool recalc_resid;         // whether to recalculate residual at the end of iterative solver
+bool store_shifted_convergence; // whether to save per-system convergence information for shifted BiCG-CS
 static bool linear_form_used; // whether the linear-system formulation was explicitly specified
 enum chpoint chp_type;     // type of checkpoint (to save)
 time_t chp_time;           // time of checkpoint (in sec)
@@ -444,6 +445,7 @@ PARSE_FUNC(store_grans);
 #endif
 PARSE_FUNC(store_int_field);
 PARSE_FUNC(store_scat_grid);
+PARSE_FUNC(store_shifted_convergence);
 PARSE_FUNC(surf);
 PARSE_FUNC(sym);
 PARSE_FUNC(test);
@@ -706,6 +708,9 @@ static struct opt_struct options[]={
 #endif
 	{PAR(store_int_field),"","Save internal fields to a file",0,NULL},
 	{PAR(store_scat_grid),"","Calculate Mueller matrix for a grid of scattering angles and save it to a file.",0,NULL},
+	{PAR(store_shifted_convergence),"","Save the convergence iteration and estimated final relative residual for each "
+		"shifted system and incident polarization to '"F_SHIFTED_CONV"'. For orientation averaging, each record "
+		"also identifies the orientation evaluation and its Euler angles.",0,NULL},
 	{PAR(surf),"<h> {<mre> <mim>|inf}","Specifies that scatterer is located above the plane surface, parallel to the "
 		"xy-plane. <h> specifies the height of particle center above the surface (along the z-axis, in um). Particle "
 		"must be entirely above the substrate. Following argument(s) specify the refractive index of the substrate "
@@ -1659,6 +1664,10 @@ PARSE_FUNC(store_scat_grid)
 {
 	store_scat_grid = true;
 }
+PARSE_FUNC(store_shifted_convergence)
+{
+	store_shifted_convergence=true;
+}
 PARSE_FUNC(surf)
 {
 	double mre,mim;
@@ -2026,6 +2035,7 @@ void InitVariables(void)
 	shapename="sphere";
 	store_int_field=false;
 	store_dip_pol=false;
+	store_shifted_convergence=false;
 	PolRelation=(enum pol)UNDEF;
 	avg_inc_pol=false;
 	ScatRelation=SQ_DRAINE;
@@ -2327,6 +2337,8 @@ void VariablesInterconnect(void)
 		PrintError("Currently '-iter sbicg' supports only '-init_field zero'");
 	if (IterMethod==IT_SHIFTED_BICG_CS && recalc_resid)
 		PrintError("Currently '-recalc_resid' is not supported with '-iter sbicg'");
+	if (store_shifted_convergence && IterMethod!=IT_SHIFTED_BICG_CS)
+		PrintError("'-store_shifted_convergence' is supported only with '-iter sbicg'");
 	if (IterMethod==IT_SHIFTED_BICG_CS && linear_form_used && MatVecMode!=MV_STANDARD)
 		PrintError("'-iter sbicg' supports only '-linear_form standard'");
 #ifdef SPARSE
