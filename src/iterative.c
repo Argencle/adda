@@ -1402,7 +1402,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 			NULL));
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&beta_cur,0,NULL,NULL));
 #else
-		beta_cur=nDotProdSelf_conj(vtmp,&Timing_OneIterComm);
+		beta_cur=nDotProdSelf_conj_Norm2(vtmp, &vtmp_norm2, &Timing_OneIterComm);
 #endif
 		beta_cur=csqrt(beta_cur);
 #ifdef OCL_BLAS
@@ -1417,8 +1417,6 @@ ITER_FUNC(Shifted_BiCG_CS)
 #ifdef OCL_BLAS
 		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,NULL));
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vtmp_norm2,0,NULL,NULL));
-#else
-		vtmp_norm2 = nNorm2(vtmp,&Timing_OneIterComm);
 #endif
 		// CG iterates for all shifted systems
 		inprodRp1_max=0;
