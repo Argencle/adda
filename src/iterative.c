@@ -44,7 +44,9 @@
 static int shifted_convergence_iter[MAX_N_SHIFTED]; // first converged iteration for each shifted system
 // defined and initialized in calculator.c
 extern doublecomplex *rvec; // can't be declared restrict due to SwapPointers
-extern doublecomplex *vcur, *vpr, *vtmp, *vnext;
+#ifndef OCL_BLAS
+extern doublecomplex *vcur, *vpr, *vtmp;
+#endif
 extern doublecomplex * restrict vec1,* restrict vec2,* restrict vec3,* restrict vec4,* restrict Avecbuffer;
 // defined and initialized in fft.c
 #if !defined(OPENCL) && !defined(SPARSE)
@@ -1370,8 +1372,11 @@ ITER_FUNC(Shifted_BiCG_CS)
 		// A.v
 #ifdef OCL_BLAS
 		CREATE_CL_BUFFER(bufdot,CL_MEM_READ_WRITE,sizeof(doublecomplex),NULL);
-#endif
+		// Host vectors are unused when MatVec_wrapper disables buffer upload/readback.
+		MatVec_wrapper(NULL,NULL,NULL,false,MV_INTERACTION,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+#else
 		MatVec_wrapper(vcur,Avecbuffer,NULL,false,MV_INTERACTION,&Timing_OneIterMVP,&Timing_OneIterMVPComm);
+#endif
 		// alfa1
 #ifdef OCL_BLAS
 		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvcur,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,
@@ -1401,22 +1406,19 @@ ITER_FUNC(Shifted_BiCG_CS)
 		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,
 			NULL));
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&beta_cur,0,NULL,NULL));
+		// Save the squared Euclidean norm before normalizing vtmp in place.
+		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vtmp_norm2,0,NULL,NULL));
 #else
 		beta_cur=nDotProdSelf_conj_Norm2(vtmp, &vtmp_norm2, &Timing_OneIterComm);
 #endif
 		beta_cur=csqrt(beta_cur);
 #ifdef OCL_BLAS
-		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvtmp,bufvnext,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
 		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
-		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufvnext,0,1,1,&command_queue,0,NULL,NULL));
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
 #else
-		nMult_cmplx(vnext, vtmp, 1/beta_cur);
-#endif
-		// vtmp = beta_{k+1} * v_{k+1}
-		// Compute the squared Euclidean norm ||vtmp||^2
-#ifdef OCL_BLAS
-		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,NULL));
-		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vtmp_norm2,0,NULL,NULL));
+		// The unnormalized squared norm has already been saved in vtmp_norm2.
+		nMultSelf_cmplx(vtmp,1/beta_cur);
 #endif
 		// CG iterates for all shifted systems
 		inprodRp1_max=0;
@@ -1460,7 +1462,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 				else nIncrem01_cmplx(xArray+offset,pArray+offset,xcoef,NULL,&Timing_OneIterComm);
 #endif
 				//current residual
-				// r_k = -(u_k/d_k)*vtmp
+				// ||r_k||^2 = |u_k/d_k|^2 * ||beta_{k+1} * v_{k+1}||^2
 				inprodRp1Array[i] =
 					cAbs2(xcoef) * vtmp_norm2;
 				if(inprodRp1Array[i]<=epsB) {
@@ -1478,15 +1480,15 @@ ITER_FUNC(Shifted_BiCG_CS)
 			}
 		}
 		inprodRp1=inprodRp1_max; // outputs are only for the highest refractive index
-		// vpr=vcur, vcur=vnext, beta_pr=beta_cur
+		// Rotate the Lanczos vectors and update beta_pr.
 #ifdef OCL_BLAS
 		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufvpr,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
-		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvnext,bufvcur,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvtmp,bufvcur,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
 		CL_CH_ERR(clFinish(command_queue));
 		my_clReleaseBuffer(bufdot);
 #else
 		SwapPointers(&vpr,&vcur);
-		SwapPointers(&vcur,&vnext);
+		SwapPointers(&vcur,&vtmp);
 #endif
 		beta_pr=beta_cur;
 	  return;

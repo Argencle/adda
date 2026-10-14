@@ -72,11 +72,12 @@ doublecomplex * restrict expsX,* restrict expsY,* restrict expsZ; // arrays of e
 #endif
 // used in iterative.c
 doublecomplex *rvec;                 // current residual
+#ifndef OCL_BLAS
 doublecomplex *vcur;				 // current basis vector in the Lanczos Process
 doublecomplex *vpr;					 // previous basis vector in the Lanczos Process
 doublecomplex *vtmp;				 // temporary vector in the Lanczos Process
+#endif
 doublecomplex *vzeros;
-doublecomplex *vnext;				 // next basis vector in the Lanczos Process
 doublecomplex * restrict Avecbuffer; // used to hold the result of matrix-vector products
 // auxiliary vectors, used in some iterative solvers (with more meaningful names)
 doublecomplex * restrict vec1,* restrict vec2,* restrict vec3,* restrict vec4;
@@ -825,10 +826,12 @@ static void AllocateEverything(void)
 #endif
 				MALLOC_VECTOR(xArray,complex,temp_int,ALL);
 
+				// With clBLAS the Lanczos vectors reside only in device buffers.
+#ifndef OCL_BLAS
 				MALLOC_VECTOR(vcur,complex,local_nRows,ALL);
 				MALLOC_VECTOR(vpr,complex,local_nRows,ALL);
 				MALLOC_VECTOR(vtmp,complex,local_nRows,ALL);
-				MALLOC_VECTOR(vnext,complex,local_nRows,ALL);
+#endif
 
 				MALLOC_VECTOR(lArray,complex,num_used_n,ALL);
 				MALLOC_VECTOR(dArray,complex,num_used_n,ALL);
@@ -842,8 +845,8 @@ static void AllocateEverything(void)
 			memory+=tmp3;
 #else
 			memory+=2*tmp3;
+			memory+=3*tmp;
 #endif
-			memory+=4*tmp;
 			memory+=4*tmp2;
 			memory+=sizeof(double)*(double)num_used_n;
 			memory+=sizeof(bool)*(double)num_used_n;
@@ -1070,10 +1073,11 @@ void FreeEverything(void)
 			Free_cVector(sigmaArray);
 			Free_cVector(uArray);
 
+#ifndef OCL_BLAS
 			Free_cVector(vcur);
 			Free_cVector(vpr);
 			Free_cVector(vtmp);
-			Free_cVector(vnext);
+#endif
 	}
 	/* TO ADD NEW ITERATIVE SOLVER
 	 * Add here a case corresponding to the new iterative solver. It should free the extra vectors that were allocated

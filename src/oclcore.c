@@ -56,7 +56,6 @@ cl_mem bufrvec; // buffer used in iterative solver
 cl_mem bufxvec; // buffer used in iterative solver
 cl_mem bufvpr;  // buffers used in Shifted BiCG CS solver
 cl_mem bufvtmp;
-cl_mem bufvnext;
 cl_mem bufpArray;
 cl_mem bufxArray;
 #endif
