@@ -1292,7 +1292,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 // Short comment, providing full name of the iterative solver
 {
 // It is recommended to define all nontrivial constants here
-#define EPS1 1E-30
+#define EPS1 1E-10 // |v^T.v|/||v||^2, as in BiCG_CS
 	// all internal variables should be defined here as static, since the function will be called many times
 	static doublecomplex pn=0; // pseudo norm
 	static doublecomplex alfa1=0;
@@ -1336,6 +1336,10 @@ ITER_FUNC(Shifted_BiCG_CS)
 		// Calculate the pseudo norm of the residual (for simplicity, x=0)
 		pn=nDotProdSelf_conj(rvec,&Timing_InitIterComm);
 #endif
+		const double pn_ratio=cabs(pn)/inprodR;
+		if (pn_ratio<EPS1)
+			LogError(ONE_POS,"Shifted BiCG_CS fails: pn breakdown: |r0^T.r0|/||r0||^2 is too small ("
+				GFORM_DEBUG" < "GFORM_DEBUG").",pn_ratio,EPS1);
 		pn=csqrt(pn); // complex square root
 #ifdef OCL_BLAS
 		cl_double2 clinvpn = {.s={creal(1/pn),cimag(1/pn)}};
@@ -1415,14 +1419,6 @@ ITER_FUNC(Shifted_BiCG_CS)
 #else
 		beta_cur=nDotProdSelf_conj_Norm2(vtmp, &vtmp_norm2, &Timing_OneIterComm);
 #endif
-		beta_cur=csqrt(beta_cur);
-#ifdef OCL_BLAS
-		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
-		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufAvecbuffer,0,1,1,&command_queue,0,NULL,NULL));
-#else
-		// The unnormalized squared norm has already been saved in vtmp_norm2.
-		nMultSelf_cmplx(vtmp,1/beta_cur);
-#endif
 		// CG iterates for all shifted systems
 		inprodRp1_max=0;
 #ifdef OCL_BLAS
@@ -1468,6 +1464,25 @@ ITER_FUNC(Shifted_BiCG_CS)
 			}
 		}
 		inprodRp1=inprodRp1_max; // outputs are only for the highest refractive index
+		if (inprodRp1<=epsB) {
+			// This includes happy breakdown (w=0): no next Lanczos vector is needed after convergence.
+#ifdef OCL_BLAS
+			CL_CH_ERR(clFinish(command_queue));
+			my_clReleaseBuffer(bufdot);
+#endif
+			return;
+		}
+		const double beta_ratio=cabs(beta_cur)/vtmp_norm2; // beta_cur still contains w^T.w here
+		if (beta_ratio<EPS1)
+			LogError(ONE_POS,"Shifted BiCG_CS fails: beta_cur breakdown: |w^T.w|/||w||^2 is too small ("
+				GFORM_DEBUG" < "GFORM_DEBUG") at iteration %d.",beta_ratio,EPS1,niter);
+		beta_cur=csqrt(beta_cur);
+#ifdef OCL_BLAS
+		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufAvecbuffer,0,1,1,&command_queue,0,NULL,NULL));
+#else
+		nMultSelf_cmplx(vtmp,1/beta_cur);
+#endif
 		// Rotate the Lanczos vectors and update beta_pr.
 #ifdef OCL_BLAS
 		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufvpr,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
