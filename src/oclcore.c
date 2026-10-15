@@ -51,6 +51,7 @@ cl_mem bufXmatrix,bufmaterial,bufposition,bufcc,bufcc_sqrt,bufargvec,bufresultve
 bool bufupload=true;
 
 #ifdef OCL_BLAS
+cl_kernel clupdateShiftedSolution;
 cl_mem buftmp;  // temporary buffer for dot products and Norm (as required by clBLAS library)
 cl_mem bufrvec; // buffer used in iterative solver
 cl_mem bufxvec; // buffer used in iterative solver
@@ -464,6 +465,10 @@ void oclinit(void)
 	CL_CH_ERR(err);
 	clinprod=clCreateKernel(program,"inpr",&err);
 	CL_CH_ERR(err);
+#ifdef OCL_BLAS
+	clupdateShiftedSolution=clCreateKernel(program,"update_shifted_solution",&err);
+	CL_CH_ERR(err);
+#endif
 	/* In principle a single kernel can be used for all transpose operations, including surface ones. However, this will
 	 * require setting the kernel arguments just before the execution. Thus, using multiple kernels seem to be a bit
 	 * faster.
@@ -555,6 +560,9 @@ void oclunload(void)
 	CL_CH_ERR(clReleaseKernel(clarith5_standard));
 	CL_CH_ERR(clReleaseKernel(clnConj));
 	CL_CH_ERR(clReleaseKernel(clinprod));
+#ifdef OCL_BLAS
+	CL_CH_ERR(clReleaseKernel(clupdateShiftedSolution));
+#endif
 	CL_CH_ERR(clReleaseKernel(cltransposeof));
 	CL_CH_ERR(clReleaseKernel(cltransposeob));
 	if (surface) { // kernels for surface

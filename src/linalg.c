@@ -385,6 +385,35 @@ void nIncrem10_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 
 //======================================================================================================================
 
+void nUpdateShiftedSolution(doublecomplex * restrict p,doublecomplex * restrict x,const doublecomplex * restrict v,
+	const doublecomplex pcoef,const doublecomplex xcoef,const bool first)
+/* p=pcoef*p+v, x+=xcoef*p, using the updated direction; p, x and v must not alias.
+ * On the first iteration initialize p=v and x=xcoef*p without reading the old p or x.
+ */
+{
+	register const size_t n=local_nRows;
+	register size_t i;
+
+	if (first) {
+		LARGE_LOOP;
+		for (i=0;i<n;i++) {
+			const doublecomplex next_p=v[i];
+			p[i]=next_p;
+			x[i]=xcoef*next_p;
+		}
+	}
+	else {
+		LARGE_LOOP;
+		for (i=0;i<n;i++) {
+			const doublecomplex next_p=pcoef*p[i]+v[i];
+			p[i]=next_p;
+			x[i]+=xcoef*next_p;
+		}
+	}
+}
+
+//======================================================================================================================
+
 void nLinComb_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,const doublecomplex * restrict c,
 	const doublecomplex c1,const doublecomplex c2,double * restrict inprod,TIME_TYPE *comm_timing)
 // a=c1*b+c2*c, inprod=|a|^2; !!! a,b,c must not alias !!!

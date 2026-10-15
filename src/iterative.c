@@ -1349,6 +1349,9 @@ ITER_FUNC(Shifted_BiCG_CS)
 		size_t shifted_vec_rows=local_nRows;
 		CL_CH_ERR(clSetKernelArg(clzero,0,sizeof(cl_mem),&bufvpr));
 		CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clzero,1,NULL,&shifted_vec_rows,NULL,0,NULL,NULL));
+		CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,0,sizeof(cl_mem),&bufvcur));
+		CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,1,sizeof(cl_mem),&bufpArray));
+		CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,2,sizeof(cl_mem),&bufxArray));
 #else
 		nInit(vpr);
 #endif
@@ -1422,6 +1425,10 @@ ITER_FUNC(Shifted_BiCG_CS)
 #endif
 		// CG iterates for all shifted systems
 		inprodRp1_max=0;
+#ifdef OCL_BLAS
+		const cl_char first=(niter==1);
+		CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,6,sizeof(cl_char),&first));
+#endif
 		for(i=0;i<num_used_n;i++) {
 			if(continue_flag[i]) {
 				if(niter!=1) lArray[i]=beta_pr/dArray[i];
@@ -1430,36 +1437,17 @@ ITER_FUNC(Shifted_BiCG_CS)
 				else uArray[i]=-lArray[i]*uArray[i];
 				const size_t offset=(size_t)i*local_nRows;
 				const doublecomplex xcoef=uArray[i]/dArray[i];
-				// pArray[i]=vcur-lArray[i]*pArray[i]
+				// Update pArray[i]=vcur-lArray[i]*pArray[i] and xArray[i]+=xcoef*pArray[i] together.
 #ifdef OCL_BLAS
-				if (niter==1) {
-					CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufpArray,0,offset*sizeof(doublecomplex),
-						sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
-				}
-				else {
-					cl_double2 clml = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
-					CLBLAS_CH_ERR(clblasZscal(local_nRows,clml,bufpArray,offset,1,1,&command_queue,0,NULL,NULL));
-					cl_double2 clunit = {.s={1,0}};
-					CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clunit,bufvcur,0,1,bufpArray,offset,1,1,&command_queue,0,
-						NULL,NULL));
-				}
-#else
-				if (niter==1) nCopy(pArray+offset,vcur);
-				else nIncrem10_cmplx(pArray+offset,vcur,-lArray[i],NULL,&Timing_OneIterComm);
-#endif
-				// xArray[i]=xArray[i]+u[i]/d[i]*p[i]
-#ifdef OCL_BLAS
+				cl_double2 clpcoef = {.s={creal(-lArray[i]),cimag(-lArray[i])}};
 				cl_double2 clxcoef = {.s={creal(xcoef),cimag(xcoef)}};
-				if (niter==1) {
-					CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufpArray,bufxArray,offset*sizeof(doublecomplex),
-						offset*sizeof(doublecomplex),sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
-					CLBLAS_CH_ERR(clblasZscal(local_nRows,clxcoef,bufxArray,offset,1,1,&command_queue,0,NULL,NULL));
-				}
-				else CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clxcoef,bufpArray,offset,1,bufxArray,offset,1,1,
-					&command_queue,0,NULL,NULL));
+				CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,3,sizeof(size_t),&offset));
+				CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,4,sizeof(cl_double2),&clpcoef));
+				CL_CH_ERR(clSetKernelArg(clupdateShiftedSolution,5,sizeof(cl_double2),&clxcoef));
+				CL_CH_ERR(clEnqueueNDRangeKernel(command_queue,clupdateShiftedSolution,1,NULL,&local_nRows,NULL,0,
+					NULL,NULL));
 #else
-				if (niter==1) nMult_cmplx(xArray+offset,pArray+offset,xcoef);
-				else nIncrem01_cmplx(xArray+offset,pArray+offset,xcoef,NULL,&Timing_OneIterComm);
+				nUpdateShiftedSolution(pArray+offset,xArray+offset,vcur,-lArray[i],xcoef,niter==1);
 #endif
 				//current residual
 				// ||r_k||^2 = |u_k/d_k|^2 * ||beta_{k+1} * v_{k+1}||^2

@@ -48,6 +48,8 @@ void nIncrem01_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b
 	double * restrict inprod,TIME_TYPE *comm_timing);
 void nIncrem10_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,const doublecomplex c,
 	double * restrict inprod,TIME_TYPE *comm_timing);
+void nUpdateShiftedSolution(doublecomplex * restrict p,doublecomplex * restrict x,const doublecomplex * restrict v,
+	const doublecomplex pcoef,const doublecomplex xcoef,const bool first);
 void nLinComb_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,const doublecomplex * restrict c,
 	const doublecomplex c1,const doublecomplex c2,double * restrict inprod,TIME_TYPE *comm_timing);
 void nLinComb1_cmplx(doublecomplex * restrict a,const doublecomplex * restrict b,const doublecomplex * restrict c,

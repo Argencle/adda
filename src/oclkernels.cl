@@ -1,4 +1,4 @@
-/* Kernel file for OpenCL kernels. Includes all subfunctions of the Matvec routine as OpenCL kernels
+/* OpenCL kernels for matrix-vector products and iterative solvers
  *
  * Copyright (C) ADDA contributors
  * This file is part of ADDA.
@@ -447,6 +447,27 @@ __kernel void arith5_standard(__global const uchar *material,__global const usho
 		quotient.s1=(argvec[j+xcomp].s1*divisor.s0-argvec[j+xcomp].s0*divisor.s1)/denominator;
 		resultvec[j+xcomp]=Xmatrix[index+xcomp*local_Nsmall]+quotient;
 	}
+}
+
+//======================================================================================================================
+
+__kernel void update_shifted_solution(__global const double2 *vcur,__global double2 *pArray,
+	__global double2 *xArray,const in_sizet offset,const double2 pcoef,const double2 xcoef,const char first)
+// Update one shifted direction and solution in a single pass; first initializes both without reading old values.
+{
+	const size_t id=get_global_id(0);
+	const size_t index=offset+id;
+	double2 next_p=vcur[id];
+	if (!first) {
+		const double2 old_p=pArray[index];
+		next_p+=(double2)(pcoef.s0*old_p.s0-pcoef.s1*old_p.s1,
+			pcoef.s0*old_p.s1+pcoef.s1*old_p.s0);
+	}
+	const double2 increment=(double2)(xcoef.s0*next_p.s0-xcoef.s1*next_p.s1,
+		xcoef.s0*next_p.s1+xcoef.s1*next_p.s0);
+	pArray[index]=next_p;
+	if (first) xArray[index]=increment;
+	else xArray[index]+=increment;
 }
 
 //======================================================================================================================
