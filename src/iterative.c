@@ -1387,27 +1387,27 @@ ITER_FUNC(Shifted_BiCG_CS)
 #endif
 		// vtmp=-alfa1*vcur+A.vcur
 #ifdef OCL_BLAS
-		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufAvecbuffer,bufvtmp,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,
-			NULL));
+		// After alfa1, the MatVec result can hold the unnormalized next Lanczos vector.
 		cl_double2 clmalfa1 = {.s={creal(-alfa1),cimag(-alfa1)}};
-		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmalfa1,bufvcur,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmalfa1,bufvcur,0,1,bufAvecbuffer,0,1,1,&command_queue,0,NULL,NULL));
 #else
 		nLinComb_cmplx(vtmp,vcur,Avecbuffer,-alfa1,1,NULL,&Timing_OneIterComm);
 #endif
 		// vtmp=vtmp-beta0*vprev
 #ifdef OCL_BLAS
 		cl_double2 clmbeta = {.s={creal(-beta_pr),cimag(-beta_pr)}};
-		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmbeta,bufvpr,0,1,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+		CLBLAS_CH_ERR(clblasZaxpy(local_nRows,clmbeta,bufvpr,0,1,bufAvecbuffer,0,1,1,&command_queue,0,NULL,NULL));
 #else
 		nIncrem01_cmplx(vtmp,vpr,-beta_pr,NULL,&Timing_OneIterComm);
 #endif
 		// beta_cur=|vtmp|ps
 #ifdef OCL_BLAS
-		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,
-			NULL));
+		CLBLAS_CH_ERR(clblasZdotu(local_nRows,bufdot,0,bufAvecbuffer,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,
+			0,NULL,NULL));
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(doublecomplex),&beta_cur,0,NULL,NULL));
-		// Save the squared Euclidean norm before normalizing vtmp in place.
-		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufvtmp,0,1,bufvtmp,0,1,buftmp,1,&command_queue,0,NULL,NULL));
+		// Save the squared Euclidean norm before normalizing the MatVec result in place.
+		CLBLAS_CH_ERR(clblasZdotc(local_nRows,bufdot,0,bufAvecbuffer,0,1,bufAvecbuffer,0,1,buftmp,1,&command_queue,0,
+			NULL,NULL));
 		CL_CH_ERR(clEnqueueReadBuffer(command_queue,bufdot,CL_TRUE,0,sizeof(double),&vtmp_norm2,0,NULL,NULL));
 #else
 		beta_cur=nDotProdSelf_conj_Norm2(vtmp, &vtmp_norm2, &Timing_OneIterComm);
@@ -1415,7 +1415,7 @@ ITER_FUNC(Shifted_BiCG_CS)
 		beta_cur=csqrt(beta_cur);
 #ifdef OCL_BLAS
 		cl_double2 clinvbeta = {.s={creal(1/beta_cur),cimag(1/beta_cur)}};
-		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufvtmp,0,1,1,&command_queue,0,NULL,NULL));
+		CLBLAS_CH_ERR(clblasZscal(local_nRows,clinvbeta,bufAvecbuffer,0,1,1,&command_queue,0,NULL,NULL));
 #else
 		// The unnormalized squared norm has already been saved in vtmp_norm2.
 		nMultSelf_cmplx(vtmp,1/beta_cur);
@@ -1483,7 +1483,8 @@ ITER_FUNC(Shifted_BiCG_CS)
 		// Rotate the Lanczos vectors and update beta_pr.
 #ifdef OCL_BLAS
 		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvcur,bufvpr,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
-		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufvtmp,bufvcur,0,0,sizeof(doublecomplex)*local_nRows,0,NULL,NULL));
+		CL_CH_ERR(clEnqueueCopyBuffer(command_queue,bufAvecbuffer,bufvcur,0,0,sizeof(doublecomplex)*local_nRows,0,
+			NULL,NULL));
 		CL_CH_ERR(clFinish(command_queue));
 		my_clReleaseBuffer(bufdot);
 #else
